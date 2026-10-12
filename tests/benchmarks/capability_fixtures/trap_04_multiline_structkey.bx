@@ -1,0 +1,13 @@
+/**
+ * False-Positive Trap: structKeyExists check on line above dereference
+ * FaultGraph line 214 checks structKeyExists on the SAME line!
+ */
+class {
+    function readQueueSafe() {
+        if ( structKeyExists( variables.config, "fallback" ) && structKeyExists( variables.config.fallback, "queueName" ) ) {
+            var q = variables.config.fallback.queueName;
+            return q;
+        }
+        return "default";
+    }
+}

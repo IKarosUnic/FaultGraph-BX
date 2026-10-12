@@ -1,0 +1,120 @@
+/**
+ * FaultGraphStructureTest - Suite B3: Relaciones del grafo y representacion de dependencias.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testMermaidGenerationSingleCause();
+        testMermaidGenerationMultipleCauses();
+        testMermaidGenerationZeroCauses();
+        testAsciiGraphStructure();
+    }
+
+    private void function testMermaidGenerationSingleCause() {
+        var id = "TC-B3-01";
+        var scenario = "Generacion de sintaxis Mermaid para 1 causa raiz";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var diag = {
+                "causes": [
+                    { "code": "TYPE_MISMATCH_NUMERIC", "scenarios": [ "S01_GATEWAY_TIMEOUT" ] }
+                ]
+            };
+
+            var mermaid = healer.toMermaid( diag );
+            variables.assert.stringContains( "flowchart LR", mermaid );
+            variables.assert.stringContains( "PaymentService.charge", mermaid );
+            variables.assert.stringContains( "fallbackCharge", mermaid );
+            variables.assert.stringContains( "TYPE_MISMATCH_NUMERIC", mermaid );
+            variables.assert.stringContains( "S01_GATEWAY_TIMEOUT", mermaid );
+
+            variables.reporter.record( id, scenario, "Diagnostico con 1 causa", "Bloque Mermaid valido con nodos y enlaces", "Mermaid generado con cabecera y nodo E1", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Diagnostico con 1 causa", "Mermaid valido", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMermaidGenerationMultipleCauses() {
+        var id = "TC-B3-02";
+        var scenario = "Generacion de sintaxis Mermaid para multiples causas raiz simultaneas";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var diag = {
+                "causes": [
+                    { "code": "NULL_CONFIG_DEREF", "scenarios": [ "S04", "S07" ] },
+                    { "code": "TYPE_MISMATCH_NUMERIC", "scenarios": [ "S01", "S02" ] }
+                ]
+            };
+
+            var mermaid = healer.toMermaid( diag );
+            variables.assert.stringContains( "E1[""NULL_CONFIG_DEREF", mermaid );
+            variables.assert.stringContains( "E2[""TYPE_MISMATCH_NUMERIC", mermaid );
+
+            variables.reporter.record( id, scenario, "Diagnostico con 2 causas", "Nodos E1 y E2 generados con sus codigos", "Nodos E1 y E2 presentes en el diagrama", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Diagnostico con 2 causas", "Nodos E1 y E2", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMermaidGenerationZeroCauses() {
+        var id = "TC-B3-03";
+        var scenario = "Generacion de sintaxis Mermaid cuando no hay causas (sistema sano)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var diag = { "causes": [] };
+            var mermaid = healer.toMermaid( diag );
+            variables.assert.stringContains( "flowchart LR", mermaid );
+            variables.assert.isFalse( find( "E1", mermaid ) > 0 );
+
+            variables.reporter.record( id, scenario, "Diagnostico con 0 causas", "Mermaid base sin aristas de error", "Mermaid base generado limpiamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Diagnostico con 0 causas", "Mermaid base", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAsciiGraphStructure() {
+        var id = "TC-B3-04";
+        var scenario = "Renderizado de grafo ASCII de propagacion de fallos";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var diag = {
+                "causes": [
+                    { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL", "scenarios": [ "S04_FALLBACK_CONFIG_MISSING" ] }
+                ]
+            };
+
+            var asciiLines = healer.renderFaultGraph( diag );
+            variables.assert.isArrayVal( asciiLines );
+            variables.assert.isTrue( arrayLen( asciiLines ) > 0 );
+            var fullText = arrayToList( asciiLines, char( 10 ) );
+            variables.assert.stringContains( "PaymentService.charge()", fullText );
+            variables.assert.stringContains( "fallbackCharge()", fullText );
+            variables.assert.stringContains( "NULL_CONFIG_DEREF", fullText );
+            variables.assert.stringContains( "CRITICAL", fullText );
+
+            variables.reporter.record( id, scenario, "Diagnostico a renderFaultGraph", "Array de lineas con flujo causal y severidad", "Lineas generadas: " & arrayLen( asciiLines ), "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Diagnostico a renderFaultGraph", "Lineas ASCII", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

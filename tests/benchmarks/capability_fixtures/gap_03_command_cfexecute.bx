@@ -1,0 +1,8 @@
+/**
+ * Recall Gap: Command execution via cfexecute
+ */
+class {
+    function runScript( required string scriptPath ) {
+        cfexecute( name="sh", arguments=arguments.scriptPath, timeout=10 );
+    }
+}

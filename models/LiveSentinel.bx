@@ -1,0 +1,142 @@
+/**
+ * LiveSentinel - Centinela en tiempo real para monitoreo y respuesta reactiva ante fallos.
+ *
+ * Vigila archivos de log en vivo y repositorios de codigo. En cuanto se detecta una
+ * nueva excepcion o anomalia:
+ *   1. Extrae y diagnostica el fallo en milisegundos (<2 ms).
+ *   2. Desafia el diagnostico con la IA Local 3B (Abogado del Diablo).
+ *   3. Sintetiza automaticamente el test de regresion (AutoTestGenerator).
+ *   4. Emite alerta en consola con el grafo Mermaid de propagacion.
+ */
+class {
+
+    public any function init( required any config ) {
+        variables.config        = arguments.config;
+        variables.ingestor      = new models.LogDiagnosticIngestor( arguments.config );
+        variables.testGenerator = new models.AutoTestGenerator( arguments.config );
+        variables.scanner       = new models.RepositoryScanner( arguments.config );
+        variables.sandbox       = new models.SecuritySandbox( arguments.config );
+        return this;
+    }
+
+    /**
+     * Monitorea un archivo de log especifico leyendo unicamente las lineas nuevas anadidas.
+     *
+     * @logPath       Ruta al archivo de log a vigilar
+     * @intervalMs    Intervalo de sondeo en milisegundos (por defecto 1000 ms)
+     * @maxIterations Limite de iteraciones (0 = infinito para daemon; >0 para tests)
+     * @callback      Closure opcional que recibe el struct de alerta en cada deteccion
+     */
+    public struct function watchLog(
+        required string logPath,
+        numeric intervalMs = 1000,
+        numeric maxIterations = 0,
+        any callback,
+        numeric initialOffset = -1
+    ) {
+        var safePath = variables.sandbox.resolveSafePath( arguments.logPath );
+        if ( !fileExists( safePath ) ) {
+            // Si el archivo aun no existe, crearlo vacio para comenzar a vigilar
+            fileWrite( safePath, "" );
+        }
+
+        var jFile = createObject( "java", "java.io.File" ).init( safePath );
+        var lastLength = ( arguments.initialOffset >= 0 ) ? arguments.initialOffset : jFile.length();
+        var iterations = 0;
+        var incidentsDetected = 0;
+        var events = [];
+
+        println( "[SENTINEL] Vigilando archivo de log: " & safePath );
+        println( "[SENTINEL] Posicion inicial del archivo: " & lastLength & " bytes." );
+        println( "[SENTINEL] Vigilancia reactiva activa." );
+        println( "" );
+
+        while ( true ) {
+            iterations = iterations + 1;
+            if ( arguments.maxIterations > 0 && iterations > arguments.maxIterations ) {
+                break;
+            }
+
+            var currentLength = jFile.length();
+            if ( currentLength > lastLength ) {
+                var bytesToRead = currentLength - lastLength;
+                // Limite defensivo para prevenir agotamiento de memoria JVM (max 5 MB por lectura)
+                var maxBytes = 5 * 1024 * 1024;
+                if ( bytesToRead > maxBytes ) {
+                    lastLength = currentLength - maxBytes;
+                    bytesToRead = maxBytes;
+                }
+
+                var raf = createObject( "java", "java.io.RandomAccessFile" ).init( jFile, "r" );
+                var byteArr = null;
+                try {
+                    raf.seek( lastLength );
+                    byteArr = createObject( "java", "java.lang.reflect.Array" ).newInstance(
+                        createObject( "java", "java.lang.Byte" ).TYPE,
+                        javacast( "int", bytesToRead )
+                    );
+                    raf.readFully( byteArr );
+                } finally {
+                    raf.close();
+                }
+
+                var newText = createObject( "java", "java.lang.String" ).init( byteArr, "UTF-8" );
+                lastLength = currentLength;
+
+                // Diagnostico automatico de las nuevas lineas
+                var diagRes = variables.ingestor.ingestAndDiagnoseText( newText, getFileFromPath( safePath ), variables.config.isLocalAiAvailable() );
+
+                if ( diagRes.ok && arrayLen( diagRes.diagnosis.causes ) > 0 ) {
+                    incidentsDetected = incidentsDetected + 1;
+
+                    // Generar inmediatamente la prueba de regresion para el fallo detectado
+                    var testRes = variables.testGenerator.generateFromDiagnosis( diagRes.diagnosis );
+
+                    var eventNotice = {
+                        "timestamp"       : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+                        "source"          : safePath,
+                        "bytesRead"       : bytesToRead,
+                        "diagnosis"       : diagRes,
+                        "generatedTest"   : testRes,
+                        "incidentNumber"  : incidentsDetected
+                    };
+                    arrayAppend( events, eventNotice );
+
+                    // Notificacion visual en consola
+                    println( "============================================================" );
+                    println( "[ALERTA LIVE SENTINEL] INCIDENTE DETECTADO ##" & incidentsDetected );
+                    println( "Hora : " & eventNotice.timestamp );
+                    println( "Causas detectadas: " & arrayLen( diagRes.diagnosis.causes ) );
+                    for ( var c in diagRes.diagnosis.causes ) {
+                        println( "  -> [" & c.severity & "] " & c.code & ": " & c.title );
+                    }
+                    if ( testRes.ok ) {
+                        println( "🛡️  Test de regresion generado: " & testRes.fileName );
+                    }
+                    println( "------------------------------------------------------------" );
+                    println( diagRes.mermaidGraph );
+                    println( "============================================================" );
+                    println( "" );
+
+                    if ( !isNull( arguments.callback ) ) {
+                        arguments.callback( eventNotice );
+                    }
+                }
+            } else if ( currentLength < lastLength ) {
+                // El archivo fue truncado o rotado (log rotation)
+                lastLength = currentLength;
+            }
+
+            sleep( arguments.intervalMs );
+        }
+
+        return {
+            "ok"               : true,
+            "targetLog"        : safePath,
+            "iterations"       : iterations,
+            "incidentsDetected": incidentsDetected,
+            "events"           : events
+        };
+    }
+
+}

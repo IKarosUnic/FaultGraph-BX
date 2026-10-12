@@ -1,0 +1,99 @@
+/**
+ * knowledge.bxs - Herramienta CLI para gestionar la Base de Conocimiento Estructurada.
+ *
+ * Uso:
+ *   boxlang knowledge.bxs
+ *   boxlang knowledge.bxs "surchargePct"
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+cfg = new config.Config( rootDir );
+kb  = new models.KnowledgeBase( cfg );
+
+println( "============================================================" );
+println( "    FAULTGRAPH-BX :: BASE DE CONOCIMIENTO TECNICO (KB)      " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+stats = kb.getStats();
+println( "--- ESTADISTICAS DE CONOCIMIENTO ---" );
+println( "Total de entradas indexadas: " & stats.totalEntries );
+println( "" );
+println( "Distribucion por Categoria:" );
+for ( cat in stats.byCategory ) {
+    println( "  - " & pad( cat, 26 ) & ": " & stats.byCategory[ cat ] );
+}
+println( "" );
+println( "Distribucion por Nivel de Verificacion:" );
+for ( vl in stats.byVerificationLevel ) {
+    println( "  - " & pad( vl, 26 ) & ": " & stats.byVerificationLevel[ vl ] );
+}
+println( "" );
+
+cmdLine = createObject( "java", "java.lang.System" ).getProperty( "sun.java.command" ) ?: "";
+tokens = listToArray( cmdLine, " " );
+scriptFound = false;
+cliArgs = [];
+for ( t in tokens ) {
+    if ( scriptFound ) {
+        arrayAppend( cliArgs, t );
+    } else if ( findNoCase( ".bxs", t ) ) {
+        scriptFound = true;
+    }
+}
+
+useHybrid = false;
+query = "fallback struct dereference casting";
+queryTokens = [];
+
+for ( i = 1; i <= arrayLen( cliArgs ); i++ ) {
+    arg = cliArgs[ i ];
+    if ( arg == "--hybrid" ) {
+        useHybrid = true;
+    } else if ( left( arg, 2 ) != "--" ) {
+        arrayAppend( queryTokens, replace( arg, '"', '', 'all' ) );
+    }
+}
+
+if ( arrayLen( queryTokens ) > 0 ) {
+    query = arrayToList( queryTokens, " " );
+}
+
+println( "--- CONSULTA RELEVANTE: [" & query & "] (Modo: " & ( useHybrid ? "Hibrido RRF / Vectorial" : "Lexico TF-IDF" ) & ") ---" );
+
+hits = useHybrid ? kb.hybridSearch( query, "", 5 ) : kb.search( query, "", 5 );
+
+if ( arrayLen( hits ) == 0 ) {
+    println( "No se encontraron entradas coincidentes para la consulta." );
+} else {
+    for ( hit in hits ) {
+        println( "" );
+        println( ">> [" & hit.id & "] " & hit.title );
+        println( "   Nivel     : " & hit.verificationLevel & " | Confiabilidad: " & hit.reliability );
+        println( "   Categoria : " & hit.category & " (Fuente: " & hit.source & ")" );
+        if ( useHybrid ) {
+            println( "   Score RRF : " & hit.rrfScore & " | Sim. Vector: " & hit.vectorSimilarity & " (Rank Lex: " & hit.lexicalRank & ", Rank Vec: " & hit.vectorRank & ")" );
+        } else {
+            println( "   Relevancia: " & hit.relevanceScore );
+        }
+        println( "   Resumen   : " & hit.summary );
+        if ( len( hit.recommendations ) ) {
+            println( "   Remedio   : " & hit.recommendations );
+        }
+    }
+}
+
+println( "" );
+println( "============================================================" );
+
+function pad( text, width ) {
+    var s = toString( text );
+    if ( len( s ) > width ) return left( s, width - 1 ) & "~";
+    return s & repeatString( " ", width - len( s ) );
+}

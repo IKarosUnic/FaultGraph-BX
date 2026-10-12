@@ -1,0 +1,490 @@
+/**
+ * OpenSourceCapabilityBenchmark.bx
+ *
+ * Banco de pruebas formal y controlado de capacidades para FaultGraph-BX.
+ *
+ * Mide de forma reproducible:
+ *   1. Deteccion de defectos conocidos (Ground Truth)
+ *   2. Deteccion de brechas de recall (Recall Gaps)
+ *   3. Discriminacion de codigo limpio (True Negatives)
+ *   4. Resistencia a trampas de falsos positivos (Precision)
+ *   5. Robustez ante BoxLang malformado y entradas adversarias
+ *   6. Conformidad estricta con la especificacion OASIS SARIF v2.1.0
+ *   7. Mutation Score empirico (Metodologia Cosmic-Ray)
+ *   8. Consumo de tiempo de ejecucion y huella de memoria JVM
+ */
+class {
+
+    public any function init( required string rootDir ) {
+        variables.rootDir     = arguments.rootDir;
+        variables.fixturesDir = arguments.rootDir & "tests/benchmarks/capability_fixtures/";
+        variables.config      = new config.Config( arguments.rootDir );
+        variables.scanner     = new models.RepositoryScanner( variables.config );
+        variables.exporter    = new models.SarifExporter();
+        variables.sandbox     = new models.SecuritySandbox( variables.config );
+        return this;
+    }
+
+    /**
+     * Ejecuta la evaluacion integral de capacidades y genera metricas cuantificables.
+     */
+    public struct function runAll() {
+        var overallStart = getTickCount();
+        var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+        rt.gc();
+        var memBefore = rt.totalMemory() - rt.freeMemory();
+
+        // 1. Evaluacion de Fixtures Estaticos
+        var fixtureResults = evaluateFixtures();
+
+        // 2. Evaluacion de Mutacion (Cosmic-Ray style)
+        var mutationResults = evaluateMutationScore();
+
+        // 3. Validacion de Especificacion OASIS SARIF v2.1.0
+        var sarifValidation = evaluateSarifSpecification();
+
+        // 4. Limites de Recursos y Archivo Gigante
+        var resourceResults = evaluateResourceLimits();
+
+        var totalDuration = getTickCount() - overallStart;
+        rt.gc();
+        var memAfter = rt.totalMemory() - rt.freeMemory();
+        var memDeltaMb = round( ( ( memAfter - memBefore ) / ( 1024 * 1024 ) ) * 100 ) / 100;
+
+        var benchmarkReport = {
+            "timestamp"          : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "totalDurationMs"    : totalDuration,
+            "peakMemoryDeltaMb"  : memDeltaMb,
+            "fixtures"           : fixtureResults,
+            "mutationTesting"    : mutationResults,
+            "sarifCompliance"    : sarifValidation,
+            "resourceLimits"     : resourceResults
+        };
+
+        return benchmarkReport;
+    }
+
+    // ==================================================================
+    // 1. EVALUACION DE FIXTURES
+    // ==================================================================
+    private struct function evaluateFixtures() {
+        var catalog = getFixtureCatalog();
+        var results = [];
+        var tp = 0;
+        var fp = 0;
+        var tn = 0;
+        var fn = 0;
+
+        for ( var item in catalog ) {
+            var fullPath = variables.fixturesDir & item.fileName;
+            var t0 = getTickCount();
+            var scan = variables.scanner.scanFile( fullPath, false );
+            var duration = getTickCount() - t0;
+
+            var detectedCodes = [];
+            for ( var iss in scan.issues ) {
+                arrayAppend( detectedCodes, iss.code );
+            }
+
+            var outcome = "UNKNOWN";
+            var notes = "";
+
+            if ( item.type == "KNOWN_DEFECT" ) {
+                var found = arrayFindNoCase( detectedCodes, item.expectedCode ) > 0;
+                if ( found ) {
+                    tp++;
+                    outcome = "TRUE_POSITIVE";
+                    notes = "Defecto detectado correctamente (" & item.expectedCode & ")";
+                } else {
+                    fn++;
+                    outcome = "FALSE_NEGATIVE";
+                    notes = "Defecto esperado no detectado (" & item.expectedCode & ")";
+                }
+            } else if ( item.type == "RECALL_GAP" ) {
+                var foundGap = arrayFindNoCase( detectedCodes, item.expectedCode ) > 0;
+                if ( foundGap ) {
+                    tp++;
+                    outcome = "SUPPORTED_GAP_DETECTED";
+                    notes = "Defecto avanzado detectado (" & item.expectedCode & ")";
+                } else {
+                    fn++;
+                    outcome = "UNSUPPORTED_GAP_MISSED";
+                    notes = "Capacidad ausente / Brecha de recall: " & item.gapDescription;
+                }
+            } else if ( item.type == "CLEAN_EXAMPLE" ) {
+                if ( arrayLen( scan.issues ) == 0 ) {
+                    tn++;
+                    outcome = "TRUE_NEGATIVE";
+                    notes = "Codigo limpio correctamente certificado";
+                } else {
+                    fp++;
+                    outcome = "FALSE_POSITIVE";
+                    notes = "Falsa alarma en codigo limpio: " & arrayToList( detectedCodes, ", " );
+                }
+            } else if ( item.type == "FALSE_POSITIVE_TRAP" ) {
+                if ( arrayLen( scan.issues ) == 0 ) {
+                    tn++;
+                    outcome = "TRUE_NEGATIVE_DISCRIMINATED";
+                    notes = "Trampa superada con exito sin falsa alarma";
+                } else {
+                    fp++;
+                    outcome = "FALSE_POSITIVE_TRIGGERED";
+                    notes = "Trampa activada falsamente: " & arrayToList( detectedCodes, ", " );
+                }
+            } else if ( item.type == "MALFORMED_OR_ADVERSARIAL" ) {
+                if ( item.fileName == "malformed_01_unclosed_brace.bx" || item.fileName == "malformed_02_invalid_tokens.bx" ) {
+                    if ( arrayFindNoCase( detectedCodes, "SYNTAX_ERROR" ) > 0 ) {
+                        tp++;
+                        outcome = "SYNTAX_ERROR_DETECTED";
+                        notes = "Error de sintaxis detectado por BoxParser AST Nivel 0";
+                    } else {
+                        fn++;
+                        outcome = "SYNTAX_ERROR_MISSED";
+                        notes = "Fallo de sintaxis no reportado como SYNTAX_ERROR";
+                    }
+                } else {
+                    // 0 bytes, prompt injection, etc.
+                    if ( scan.ok ) {
+                        tn++;
+                        outcome = "SAFELY_CONTAINED";
+                        notes = "Entrada adversaria procesada de forma segura sin excepciones no controladas";
+                    } else {
+                        fp++;
+                        outcome = "CRASH_OR_UNHANDLED_ERROR";
+                        notes = "Excepcion no controlada durante el escaneo";
+                    }
+                }
+            }
+
+            arrayAppend( results, {
+                "id"            : item.id,
+                "fileName"      : item.fileName,
+                "category"      : item.category,
+                "type"          : item.type,
+                "expectedCode"  : item.expectedCode,
+                "detectedCodes" : detectedCodes,
+                "outcome"       : outcome,
+                "notes"         : notes,
+                "durationMs"    : duration
+            } );
+        }
+
+        var total = arrayLen( results );
+        var precision = ( ( tp + fp ) > 0 ) ? round( ( tp / ( tp + fp ) ) * 1000 ) / 10 : 0.0;
+        var recall    = ( ( tp + fn ) > 0 ) ? round( ( tp / ( tp + fn ) ) * 1000 ) / 10 : 0.0;
+        var f1Score   = ( ( precision + recall ) > 0 ) ? round( ( 2 * precision * recall / ( precision + recall ) ) * 10 ) / 10 : 0.0;
+
+        return {
+            "totalFixtures" : total,
+            "truePositives" : tp,
+            "falsePositives": fp,
+            "trueNegatives" : tn,
+            "falseNegatives": fn,
+            "precisionPct"  : precision,
+            "recallPct"     : recall,
+            "f1Score"       : f1Score,
+            "details"       : results
+        };
+    }
+
+    // ==================================================================
+    // 2. MUTATION TESTING SCORE (COSMIC-RAY METHODOLOGY)
+    // ==================================================================
+    private struct function evaluateMutationScore() {
+        var t0 = getTickCount();
+        var mutants = [
+            {
+                "id"          : "MUT-01",
+                "name"        : "Relational Operator Mutation",
+                "description" : "Mutacion de 'cleanAmount <= 0' a 'cleanAmount < 0' (permite monto 0)",
+                "target"      : "cleanAmount <= 0",
+                "replacement" : "cleanAmount < 0",
+                "testInput"   : { "amount": 0, "currency": "USD" },
+                "shouldFail"  : true
+            },
+            {
+                "id"          : "MUT-02",
+                "name"        : "Arithmetic Operator Mutation",
+                "description" : "Mutacion de 'baseAmount + surcharge' a 'baseAmount - surcharge'",
+                "target"      : "var total      = baseAmount + surcharge;",
+                "replacement" : "var total      = baseAmount - surcharge;",
+                "testInput"   : { "amount": 100, "currency": "USD" },
+                "shouldFail"  : true
+            },
+            {
+                "id"          : "MUT-03",
+                "name"        : "Null Dereference Guard Deletion",
+                "description" : "Eliminacion de structKeyExists( variables.config, 'fallback' )",
+                "target"      : "structKeyExists( variables.config, ""fallback"" ) && isStruct( variables.config.fallback )",
+                "replacement" : "true",
+                "testInput"   : { "amount": 100, "currency": "USD" },
+                "shouldFail"  : true
+            },
+            {
+                "id"          : "MUT-04",
+                "name"        : "Numeric Sanitizer Deletion",
+                "description" : "Eliminacion de limpieza de simbolo '$' y comas en monto",
+                "target"      : "replace( replace( toString( arguments.amount ), "","", """", ""all"" ), ""$"", """", ""all"" )",
+                "replacement" : "toString( arguments.amount )",
+                "testInput"   : { "amount": "$1,250.00", "currency": "USD" },
+                "shouldFail"  : true
+            },
+            {
+                "id"          : "MUT-05",
+                "name"        : "Default Fallback Queue Mutation",
+                "description" : "Mutacion del queueName por defecto a cadena vacia",
+                "target"      : """payments-offline-default""",
+                "replacement" : """""",
+                "testInput"   : { "amount": 50, "currency": "USD" },
+                "shouldFail"  : true
+            }
+        ];
+
+        var originalPatched = fileRead( variables.rootDir & "target_app/PaymentServicePatched.bx" );
+        var killedCount = 0;
+        var survivedCount = 0;
+        var mutantDetails = [];
+
+        for ( var m in mutants ) {
+            var mutantCode = replace( originalPatched, m.target, m.replacement );
+            var mutantPath = variables.rootDir & "scratch/mutant_" & m.id & ".bx";
+            fileWrite( mutantPath, mutantCode );
+
+            var killed = false;
+            var killReason = "";
+
+            try {
+                // Instanciamos el servicio mutado y comprobamos con ChaosEngine o ejecucion directa
+                var gwFail = function( orderId, amount, currency ) { throw( type="Timeout", message="Gateway timeout" ); };
+                var cfgEmpty = {};
+                var compName = "scratch.mutant_" & m.id;
+                var mutantService = createObject( compName ).init( cfgEmpty, gwFail );
+
+                var res = mutantService.charge( "ORD-MUT-" & m.id, m.testInput.amount, m.testInput.currency );
+
+                // Verificaciones de contrato para determinar si el mutante fue detectado (killed)
+                if ( m.id == "MUT-01" && isStruct( res ) && res.status != "REJECTED_INVALID_AMOUNT" ) {
+                    killed = true;
+                    killReason = "Detectado: El mutante acepto monto 0 en vez de REJECTED_INVALID_AMOUNT";
+                } else if ( m.id == "MUT-02" && isStruct( res ) && structKeyExists( res, "totalWithSurcharge" ) && res.totalWithSurcharge < res.amount ) {
+                    killed = true;
+                    killReason = "Detectado: totalWithSurcharge (" & res.totalWithSurcharge & ") es menor que amount (" & res.amount & ")";
+                } else if ( m.id == "MUT-03" ) {
+                    // Con cfg vacio, debe reventar si se elimino la guardia
+                    killed = false;
+                } else if ( m.id == "MUT-04" && isStruct( res ) && res.status != "QUEUED_OFFLINE" ) {
+                    killed = true;
+                    killReason = "Detectado: Fallo de conversion ante '$1,250.00'";
+                } else if ( m.id == "MUT-05" && isStruct( res ) && len( trim( res.channel ) ) == 0 ) {
+                    killed = true;
+                    killReason = "Detectado: Canal offline vacio no cumple contrato";
+                }
+            } catch ( any mutErr ) {
+                killed = true;
+                killReason = "Detectado por excepcion de runtime: " & mutErr.type & " - " & mutErr.message;
+            }
+
+            if ( killed ) {
+                killedCount++;
+            } else {
+                survivedCount++;
+            }
+
+            arrayAppend( mutantDetails, {
+                "id"         : m.id,
+                "name"       : m.name,
+                "description": m.description,
+                "killed"     : killed,
+                "status"     : killed ? "KILLED" : "SURVIVED",
+                "killReason" : killReason
+            } );
+
+            // Limpieza del archivo temporal
+            if ( fileExists( mutantPath ) ) {
+                fileDelete( mutantPath );
+            }
+        }
+
+        var totalMutants = arrayLen( mutants );
+        var mutationScorePct = totalMutants > 0 ? round( ( killedCount / totalMutants ) * 1000 ) / 10 : 0.0;
+
+        return {
+            "totalMutants"    : totalMutants,
+            "killed"          : killedCount,
+            "survived"        : survivedCount,
+            "mutationScorePct": mutationScorePct,
+            "durationMs"      : getTickCount() - t0,
+            "mutants"         : mutantDetails
+        };
+    }
+
+    // ==================================================================
+    // 3. VALIDACION FORMAL DE ESPECIFICACION OASIS SARIF v2.1.0
+    // ==================================================================
+    private struct function evaluateSarifSpecification() {
+        var t0 = getTickCount();
+        var mockResults = variables.scanner.scanDirectory( variables.rootDir & "target_app", false );
+        var sarif = variables.exporter.exportFromScanner( mockResults, variables.rootDir );
+
+        var checks = [];
+        var passCount = 0;
+
+        // Regla 1: Version 2.1.0
+        var vOk = structKeyExists( sarif, "version" ) && sarif.version == "2.1.0";
+        arrayAppend( checks, { "rule": "SARIF_VERSION", "passed": vOk, "desc": "version == '2.1.0'" } );
+        if ( vOk ) { passCount++; }
+
+        // Regla 2: $schema OASIS valido
+        var sOk = structKeyExists( sarif, "$schema" ) && findNoCase( "oasis-open.org/sarif", sarif[ "$schema" ] ) > 0;
+        arrayAppend( checks, { "rule": "SARIF_SCHEMA_URI", "passed": sOk, "desc": "URI formal de esquema OASIS presente" } );
+        if ( sOk ) { passCount++; }
+
+        // Regla 3: runs array no vacio
+        var rOk = structKeyExists( sarif, "runs" ) && isArray( sarif.runs ) && arrayLen( sarif.runs ) >= 1;
+        arrayAppend( checks, { "rule": "SARIF_RUNS_NON_EMPTY", "passed": rOk, "desc": "Array runs contiene al menos 1 ejecucion" } );
+        if ( rOk ) { passCount++; }
+
+        var run = rOk ? sarif.runs[ 1 ] : {};
+
+        // Regla 4: tool.driver con nombre y version
+        var dOk = structKeyExists( run, "tool" ) && structKeyExists( run.tool, "driver" ) && len( trim( run.tool.driver.name ) ) > 0;
+        arrayAppend( checks, { "rule": "SARIF_TOOL_DRIVER", "passed": dOk, "desc": "tool.driver.name definido formalmente" } );
+        if ( dOk ) { passCount++; }
+
+        // Regla 5: driver.rules contiene todas las reglas usadas
+        var rulesOk = structKeyExists( run.tool.driver, "rules" ) && isArray( run.tool.driver.rules ) && arrayLen( run.tool.driver.rules ) >= 1;
+        arrayAppend( checks, { "rule": "SARIF_RULES_CATALOG", "passed": rulesOk, "desc": "driver.rules contiene catalogo con definiciones" } );
+        if ( rulesOk ) { passCount++; }
+
+        // Regla 6: startLine >= 1 en todas las ubicaciones (OASIS spec sec. 3.30.1)
+        var lineNumOk = true;
+        var ruleIndexOk = true;
+        var levelOk = true;
+        var validLevels = [ "error", "warning", "note", "none" ];
+
+        if ( structKeyExists( run, "results" ) && isArray( run.results ) ) {
+            for ( var resItem in run.results ) {
+                if ( arrayFindNoCase( validLevels, resItem.level ) == 0 ) {
+                    levelOk = false;
+                }
+                if ( structKeyExists( resItem, "ruleIndex" ) && ( resItem.ruleIndex < 0 || resItem.ruleIndex >= arrayLen( run.tool.driver.rules ) ) ) {
+                    ruleIndexOk = false;
+                }
+                if ( structKeyExists( resItem, "locations" ) && arrayLen( resItem.locations ) > 0 ) {
+                    var region = resItem.locations[ 1 ].physicalLocation.region;
+                    if ( structKeyExists( region, "startLine" ) && region.startLine < 1 ) {
+                        lineNumOk = false;
+                    }
+                }
+            }
+        }
+
+        arrayAppend( checks, { "rule": "SARIF_START_LINE_GE_1", "passed": lineNumOk, "desc": "startLine >= 1 (1-based line indexing OASIS sec 3.30.1)" } );
+        if ( lineNumOk ) { passCount++; }
+
+        arrayAppend( checks, { "rule": "SARIF_RULE_INDEX_BOUNDS", "passed": ruleIndexOk, "desc": "ruleIndex apunta a un indice valido en driver.rules" } );
+        if ( ruleIndexOk ) { passCount++; }
+
+        arrayAppend( checks, { "rule": "SARIF_VALID_LEVELS", "passed": levelOk, "desc": "level pertenece a ['error','warning','note','none']" } );
+        if ( levelOk ) { passCount++; }
+
+        // Regla 7: Serializacion JSON valida y deserializacion roundtrip
+        var jsonText = jsonSerialize( sarif );
+        var jsonOk = isJson( jsonText );
+        arrayAppend( checks, { "rule": "SARIF_JSON_ROUNDTRIP", "passed": jsonOk, "desc": "Serializacion JSON roundtrip integra" } );
+        if ( jsonOk ) { passCount++; }
+
+        var compliancePct = round( ( passCount / arrayLen( checks ) ) * 1000 ) / 10;
+
+        return {
+            "totalChecks"   : arrayLen( checks ),
+            "passedChecks"  : passCount,
+            "compliancePct" : compliancePct,
+            "durationMs"    : getTickCount() - t0,
+            "checks"        : checks
+        };
+    }
+
+    // ==================================================================
+    // 4. LIMITES DE RECURSOS Y ARCHIVO MASIVO
+    // ==================================================================
+    private struct function evaluateResourceLimits() {
+        var t0 = getTickCount();
+        var massiveFilePath = variables.rootDir & "scratch/benchmark_massive_file.bx";
+
+        // Generar un archivo sintetico de 5,000 lineas
+        var sb = [];
+        arrayAppend( sb, "class {" );
+        for ( var i = 1; i <= 5000; i++ ) {
+            arrayAppend( sb, "    function helperMethod" & i & "( required numeric x ) { return arguments.x * 2; }" );
+        }
+        arrayAppend( sb, "}" );
+        fileWrite( massiveFilePath, arrayToList( sb, char( 10 ) ) );
+
+        var scanResult = variables.scanner.scanFile( massiveFilePath, false );
+        var durationMs = getTickCount() - t0;
+
+        // Limpieza
+        if ( fileExists( massiveFilePath ) ) {
+            fileDelete( massiveFilePath );
+        }
+
+        var passedLimit = durationMs < 5000 && scanResult.ok;
+
+        return {
+            "test"        : "Massive 5,000-line BoxLang File Parsing",
+            "lines"       : 5002,
+            "durationMs"  : durationMs,
+            "passed"      : passedLimit,
+            "ceilingMs"   : 5000,
+            "clean"       : scanResult.clean,
+            "notes"       : passedLimit ? "Completado en " & durationMs & " ms (<5000ms limite)" : "Excedio limite de tiempo"
+        };
+    }
+
+    // ==================================================================
+    // CATALOGO DE FIXTURES DE BENCHMARK
+    // ==================================================================
+    private array function getFixtureCatalog() {
+        return [
+            // 1. Defectos Conocidos (Deteccion Esperada)
+            { id: "FX-DEF-01", fileName: "defect_01_sql_concat.bx",        category: "SQL Injection",          type: "KNOWN_DEFECT", expectedCode: "SQL_INJECTION_RISK" },
+            { id: "FX-DEF-02", fileName: "defect_02_system_runtime.bx",    category: "Command Execution",      type: "KNOWN_DEFECT", expectedCode: "DANGEROUS_SYSTEM_CALL" },
+            { id: "FX-DEF-03", fileName: "defect_03_hardcoded_secret_eq.bx", category: "Secret Exposure",      type: "KNOWN_DEFECT", expectedCode: "HARDCODED_SECRET" },
+            { id: "FX-DEF-04", fileName: "defect_04_unprotected_deref.bx",  category: "Null Dereference",       type: "KNOWN_DEFECT", expectedCode: "UNPROTECTED_CONFIG_DEREF" },
+            { id: "FX-DEF-05", fileName: "defect_05_unvalidated_numeric.bx", category: "Numeric Cast Error",    type: "KNOWN_DEFECT", expectedCode: "UNVALIDATED_NUMERIC_CAST" },
+            { id: "FX-DEF-06", fileName: "defect_06_empty_catch.bx",        category: "Swallowed Exception",    type: "KNOWN_DEFECT", expectedCode: "EMPTY_CATCH_BLOCK" },
+            { id: "FX-DEF-07", fileName: "defect_07_resource_leak.bx",      category: "Resource Leak",          type: "KNOWN_DEFECT", expectedCode: "RESOURCE_LEAK_RISK" },
+            { id: "FX-DEF-08", fileName: "defect_08_unsafe_concurrency.bx", category: "Race Condition",        type: "KNOWN_DEFECT", expectedCode: "UNSAFE_CONCURRENT_MUTATION" },
+
+            // 2. Brechas de Recall / Limitaciones del Scanner Actual
+            { id: "FX-GAP-01", fileName: "gap_01_sql_interpolation.bx",     category: "SQLi Template Interpolation", type: "RECALL_GAP", expectedCode: "SQL_INJECTION_RISK", gapDescription: "SQLi via CFML ##interpolation## sin concatenacion directa (&|+)" },
+            { id: "FX-GAP-02", fileName: "gap_02_secret_struct_literal.bx", category: "Secret in Struct Literal",   type: "RECALL_GAP", expectedCode: "HARDCODED_SECRET",   gapDescription: "Clave secreta en clave de struct { apiKey: '...' } en vez de asignacion (=)" },
+            { id: "FX-GAP-03", fileName: "gap_03_command_cfexecute.bx",     category: "Command Injection cfexecute", type: "RECALL_GAP", expectedCode: "DANGEROUS_SYSTEM_CALL", gapDescription: "Ejecucion de comandos del SO mediante tag/funcion cfexecute" },
+            { id: "FX-GAP-04", fileName: "gap_04_generic_numeric_calc.bx",  category: "Generic Numeric Arithmetic",  type: "RECALL_GAP", expectedCode: "UNVALIDATED_NUMERIC_CAST", gapDescription: "Aritmetica sobre argumentos genericos (price*quantity) sin validar isNumeric" },
+            { id: "FX-GAP-05", fileName: "gap_05_insecure_deserialization.bx", category: "Insecure Deserialization", type: "RECALL_GAP", expectedCode: "INSECURE_DESERIALIZATION", gapDescription: "Deserializacion insegura via ObjectInputStream (CWE-502)" },
+
+            // 3. Ejemplos Limpios (True Negatives)
+            { id: "FX-CLN-01", fileName: "clean_01_parametrized_sql.bx",       category: "Parametrized SQL",       type: "CLEAN_EXAMPLE", expectedCode: "NONE" },
+            { id: "FX-CLN-02", fileName: "clean_02_safe_config_elvis.bx",      category: "Safe Elvis Navigation",  type: "CLEAN_EXAMPLE", expectedCode: "NONE" },
+            { id: "FX-CLN-03", fileName: "clean_03_validated_numeric.bx",      category: "Validated Arithmetic",   type: "CLEAN_EXAMPLE", expectedCode: "NONE" },
+            { id: "FX-CLN-04", fileName: "clean_04_safe_concurrency_locked.bx", category: "Synchronized Mutation", type: "CLEAN_EXAMPLE", expectedCode: "NONE" },
+            { id: "FX-CLN-05", fileName: "clean_05_empty_service.bx",          category: "Plain Utility Class",    type: "CLEAN_EXAMPLE", expectedCode: "NONE" },
+
+            // 4. Trampas de Falsos Positivos (Testing Precision)
+            { id: "FX-TRP-01", fileName: "trap_01_url_with_double_slash.bx",   category: "URL Literal with //",    type: "FALSE_POSITIVE_TRAP", expectedCode: "NONE" },
+            { id: "FX-TRP-02", fileName: "trap_02_comment_with_trigger.bx",    category: "Technical Comments",     type: "FALSE_POSITIVE_TRAP", expectedCode: "NONE" },
+            { id: "FX-TRP-03", fileName: "trap_03_multiline_lock.bx",          category: "Multiline Lock Block",   type: "FALSE_POSITIVE_TRAP", expectedCode: "NONE" },
+            { id: "FX-TRP-04", fileName: "trap_04_multiline_structkey.bx",     category: "Multiline Guard Check",  type: "FALSE_POSITIVE_TRAP", expectedCode: "NONE" },
+            { id: "FX-TRP-05", fileName: "trap_05_resource_try_finally.bx",    category: "Resource in Try/Finally", type: "FALSE_POSITIVE_TRAP", expectedCode: "NONE" },
+
+            // 5. Malformados y Adversarios
+            { id: "FX-ADV-01", fileName: "malformed_01_unclosed_brace.bx",     category: "Unclosed Syntax",        type: "MALFORMED_OR_ADVERSARIAL", expectedCode: "SYNTAX_ERROR" },
+            { id: "FX-ADV-02", fileName: "malformed_02_invalid_tokens.bx",     category: "Invalid Tokens",         type: "MALFORMED_OR_ADVERSARIAL", expectedCode: "SYNTAX_ERROR" },
+            { id: "FX-ADV-03", fileName: "malformed_03_empty.bx",              category: "0-Byte Empty File",      type: "MALFORMED_OR_ADVERSARIAL", expectedCode: "NONE" },
+            { id: "FX-ADV-04", fileName: "adv_01_prompt_injection.bx",         category: "Prompt Injection Attack", type: "MALFORMED_OR_ADVERSARIAL", expectedCode: "NONE" },
+            { id: "FX-ADV-05", fileName: "adv_02_unicode_identifiers.bx",      category: "Unicode UTF-8 Code",     type: "MALFORMED_OR_ADVERSARIAL", expectedCode: "NONE" }
+        ];
+    }
+
+}

@@ -1,0 +1,570 @@
+/**
+ * StructuralKnowledgeGraph - Grafo de Conocimiento Estructural y Razonamiento Causal para FaultGraph-BX.
+ *
+ * Mision:
+ *   1. Mapea modulos, clases, metodos, configuraciones, llamadas, dependencias y datos del repositorio.
+ *   2. Registra procedencia explicita para cada nodo y arista (archivo, lineas, tipo de relacion, certeza).
+ *   3. Distingue tres estados de relacion:
+ *        - OBSERVED             : Relaciones observadas directamente en AST / sintaxis.
+ *        - INFERRED             : Relaciones inferidas por analisis semantico o modelos de IA.
+ *        - DYNAMICALLY_VERIFIED : Relaciones confirmadas en tiempo de ejecucion mediante pruebas o caos.
+ *   4. Permite extraccion de subgrafos pertinentes para el motor de razonamiento (evitando saturacion de tokens).
+ *   5. Admite actualizacion incremental mediante hashing de archivos, evitando reconstrucciones completas.
+ *   6. Integra e interactua de forma bidireccional con el formato y salida de Graphify.
+ */
+class {
+
+    public any function init( any config = null ) {
+        variables.config        = structKeyExists( arguments, "config" ) && !isNull( arguments.config ) ? arguments.config : new config.Config( getCurrentTemplatePath() );
+        variables.nodes         = {};
+        variables.edges         = [];
+        variables.fileNodeIndex = {}; // filePath -> array de nodeIds
+        variables.fileHashes    = {}; // filePath -> hash MD5/SHA-256
+        variables.communities   = {};
+        variables.sourceRoot    = isObject( variables.config ) && structKeyExists( variables.config, "getRootDir" ) ? variables.config.getRootDir() : "";
+        return this;
+    }
+
+    /**
+     * Agrega un nodo al grafo preservando procedencia y tipo.
+     */
+    public struct function addNode(
+        required string id,
+        required string label,
+        string type = "COMPONENT",
+        string sourceFile = "",
+        numeric startLine = 1,
+        numeric endLine = 1,
+        struct metadata = {}
+    ) {
+        var cleanId = trim( arguments.id );
+        var nodeObj = {
+            "id"         : cleanId,
+            "label"      : arguments.label,
+            "type"       : uCase( arguments.type ),
+            "sourceFile" : arguments.sourceFile,
+            "startLine"  : arguments.startLine,
+            "endLine"    : arguments.endLine,
+            "metadata"   : arguments.metadata,
+            "community"  : structKeyExists( arguments.metadata, "community" ) ? arguments.metadata.community : "General",
+            "inDegree"   : 0,
+            "outDegree"  : 0
+        };
+
+        variables.nodes[ cleanId ] = nodeObj;
+
+        if ( len( arguments.sourceFile ) ) {
+            var normFile = replace( arguments.sourceFile, "\", "/", "all" );
+            if ( !structKeyExists( variables.fileNodeIndex, normFile ) ) {
+                variables.fileNodeIndex[ normFile ] = [];
+            }
+            if ( !arrayContains( variables.fileNodeIndex[ normFile ], cleanId ) ) {
+                arrayAppend( variables.fileNodeIndex[ normFile ], cleanId );
+            }
+        }
+
+        return nodeObj;
+    }
+
+    /**
+     * Agrega una arista dirigida entre dos nodos con procedencia y estado de certeza.
+     *
+     * @status: "OBSERVED", "INFERRED", o "DYNAMICALLY_VERIFIED"
+     */
+    public struct function addEdge(
+        required string source,
+        required string target,
+        string relationType = "DEPENDS_ON",
+        string status = "OBSERVED",
+        numeric certainty = 1.0,
+        string sourceFile = "",
+        numeric line = 0,
+        string evidence = ""
+    ) {
+        var sId = trim( arguments.source );
+        var tId = trim( arguments.target );
+
+        // Garantizar existencia de nodos extremos
+        if ( !structKeyExists( variables.nodes, sId ) ) {
+            addNode( sId, sId, "UNKNOWN", arguments.sourceFile, arguments.line, arguments.line );
+        }
+        if ( !structKeyExists( variables.nodes, tId ) ) {
+            addNode( tId, tId, "UNKNOWN", arguments.sourceFile, arguments.line, arguments.line );
+        }
+
+        var cleanStatus = uCase( trim( arguments.status ) );
+        if ( cleanStatus != "OBSERVED" && cleanStatus != "INFERRED" && cleanStatus != "DYNAMICALLY_VERIFIED" ) {
+            cleanStatus = "OBSERVED";
+        }
+
+        // Evitar aristas duplicadas
+        for ( var existing in variables.edges ) {
+            if ( existing.source == sId && existing.target == tId && existing.relationType == arguments.relationType ) {
+                // Si la arista existente se verifica dinamicamente, ascender estado
+                if ( cleanStatus == "DYNAMICALLY_VERIFIED" ) {
+                    existing.status = "DYNAMICALLY_VERIFIED";
+                    existing.certainty = 1.0;
+                    if ( len( arguments.evidence ) ) existing.evidence = arguments.evidence;
+                }
+                return existing;
+            }
+        }
+
+        var edgeObj = {
+            "source"       : sId,
+            "target"       : tId,
+            "relationType" : uCase( arguments.relationType ),
+            "status"       : cleanStatus,
+            "certainty"    : arguments.certainty,
+            "sourceFile"   : arguments.sourceFile,
+            "line"         : arguments.line,
+            "evidence"     : arguments.evidence
+        };
+
+        arrayAppend( variables.edges, edgeObj );
+        variables.nodes[ sId ].outDegree++;
+        variables.nodes[ tId ].inDegree++;
+
+        return edgeObj;
+    }
+
+    public struct function getNode( required string id ) {
+        return structKeyExists( variables.nodes, arguments.id ) ? variables.nodes[ arguments.id ] : {};
+    }
+
+    public struct function getNodes() {
+        return variables.nodes;
+    }
+
+    public array function getEdges() {
+        return variables.edges;
+    }
+
+    public numeric function getNodeCount() {
+        return structCount( variables.nodes );
+    }
+
+    public numeric function getEdgeCount() {
+        return arrayLen( variables.edges );
+    }
+
+    /**
+     * Retorna los nodos vecinos a un nodo dado.
+     */
+    public array function getNeighbors( required string nodeId, string direction = "ALL" ) {
+        var neighbors = [];
+        var seen = {};
+        var dir = uCase( trim( arguments.direction ) );
+
+        for ( var e in variables.edges ) {
+            if ( ( dir == "OUT" || dir == "ALL" ) && e.source == arguments.nodeId ) {
+                if ( !structKeyExists( seen, e.target ) ) {
+                    seen[ e.target ] = true;
+                    arrayAppend( neighbors, { "nodeId": e.target, "edge": e, "direction": "OUT" } );
+                }
+            }
+            if ( ( dir == "IN" || dir == "ALL" ) && e.target == arguments.nodeId ) {
+                if ( !structKeyExists( seen, e.source ) ) {
+                    seen[ e.source ] = true;
+                    arrayAppend( neighbors, { "nodeId": e.source, "edge": e, "direction": "IN" } );
+                }
+            }
+        }
+
+        return neighbors;
+    }
+
+    /**
+     * Extrae un subgrafo acotado a K saltos alrededor de uno o mas nodos focales.
+     * Esencial para proporcionar contexto relevante y compacto al LLM sin repositorios completos.
+     */
+    public struct function extractSubgraph( required array focalNodeIds, numeric maxHops = 2 ) {
+        var subNodes = {};
+        var subEdges = [];
+        var frontier = [];
+        var visited = {};
+
+        for ( var fId in arguments.focalNodeIds ) {
+            var tfId = trim( fId );
+            if ( structKeyExists( variables.nodes, tfId ) ) {
+                subNodes[ tfId ] = duplicate( variables.nodes[ tfId ] );
+                visited[ tfId ] = true;
+                arrayAppend( frontier, { "id": tfId, "hop": 0 } );
+            }
+        }
+
+        while ( arrayLen( frontier ) > 0 ) {
+            var current = frontier[ 1 ];
+            arrayDeleteAt( frontier, 1 );
+
+            if ( current.hop >= arguments.maxHops ) {
+                continue;
+            }
+
+            var nbs = getNeighbors( current.id, "ALL" );
+            for ( var nb in nbs ) {
+                var nbId = nb.nodeId;
+                if ( !structKeyExists( subNodes, nbId ) && structKeyExists( variables.nodes, nbId ) ) {
+                    subNodes[ nbId ] = duplicate( variables.nodes[ nbId ] );
+                    visited[ nbId ] = true;
+                    arrayAppend( frontier, { "id": nbId, "hop": current.hop + 1 } );
+                }
+            }
+        }
+
+        // Recolectar todas las aristas entre los nodos seleccionados
+        for ( var e in variables.edges ) {
+            if ( structKeyExists( subNodes, e.source ) && structKeyExists( subNodes, e.target ) ) {
+                arrayAppend( subEdges, duplicate( e ) );
+            }
+        }
+
+        return {
+            "focalNodes" : arguments.focalNodeIds,
+            "maxHops"    : arguments.maxHops,
+            "nodeCount"  : structCount( subNodes ),
+            "edgeCount"  : arrayLen( subEdges ),
+            "nodes"      : subNodes,
+            "edges"      : subEdges
+        };
+    }
+
+    /**
+     * Superpone la traza dinamica de ejecucion y fallos de caos directamente sobre el grafo.
+     * Asciende las aristas ejercitadas a DYNAMICALLY_VERIFIED y marca los nodos que fallaron.
+     */
+    public struct function overlayDynamicExecutionTrace( required struct executionTrace ) {
+        var overlaidEvents = 0;
+        var causes = structKeyExists( arguments.executionTrace, "causes" ) ? arguments.executionTrace.causes : [];
+
+        for ( var cause in causes ) {
+            var causeCode = cause.code;
+            var loc = structKeyExists( cause, "location" ) ? cause.location : "";
+            var vNodeId = "VULN_" & causeCode;
+
+            // Anadir o actualizar nodo de vulnerabilidad / error
+            addNode(
+                id = vNodeId,
+                label = cause.title,
+                type = "VULNERABILITY",
+                sourceFile = listFirst( loc, ":" ),
+                startLine = isNumeric( listLast( loc, ":" ) ) ? val( listLast( loc, ":" ) ) : 1,
+                metadata = {
+                    "severity"   : cause.severity,
+                    "confidence" : cause.confidence,
+                    "scenarios"  : cause.scenarios,
+                    "verified"   : true
+                }
+            );
+
+            // Relacionar el componente causal con la contingencia
+            if ( len( loc ) ) {
+                var compFile = listFirst( loc, ":" );
+                addEdge(
+                    source = compFile,
+                    target = vNodeId,
+                    relationType = "TRIGGERED_BY",
+                    status = "DYNAMICALLY_VERIFIED",
+                    certainty = 1.0,
+                    sourceFile = compFile,
+                    line = val( listLast( loc, ":" ) ),
+                    evidence = cause.sampleError
+                );
+                overlaidEvents++;
+            }
+        }
+
+        return {
+            "ok"             : true,
+            "overlaidEvents" : overlaidEvents,
+            "totalCauses"    : arrayLen( causes )
+        };
+    }
+
+    /**
+     * Detecta "God Nodes" (nodos con mayor grado de centralidad e impacto arquitectonico).
+     */
+    public array function getGodNodes( numeric topN = 5 ) {
+        var list = [];
+        for ( var k in variables.nodes ) {
+            var n = variables.nodes[ k ];
+            var degree = n.inDegree + n.outDegree;
+            arrayAppend( list, {
+                "id"       : n.id,
+                "label"    : n.label,
+                "type"     : n.type,
+                "degree"   : degree,
+                "inDegree" : n.inDegree,
+                "outDegree": n.outDegree
+            } );
+        }
+
+        // Ordenar descendentemente por grado
+        arraySort( list, ( a, b ) => {
+            return b.degree - a.degree;
+        } );
+
+        var res = [];
+        var limit = min( arguments.topN, arrayLen( list ) );
+        for ( var i = 1; i <= limit; i++ ) {
+            arrayAppend( res, list[ i ] );
+        }
+        return res;
+    }
+
+    /**
+     * Ingiere un archivo graph.json exportado por Graphify.
+     */
+    public struct function ingestFromGraphifyJson( required string graphJsonPath ) {
+        if ( !fileExists( arguments.graphJsonPath ) ) {
+            return { "ok": false, "error": "Archivo graph.json no existe: " & arguments.graphJsonPath };
+        }
+
+        var jsonRaw = fileRead( arguments.graphJsonPath );
+        var parsed = jsonDeserialize( jsonRaw );
+
+        var nodesIn = structKeyExists( parsed, "nodes" ) ? parsed.nodes : [];
+        var edgesIn = structKeyExists( parsed, "edges" ) ? parsed.edges : ( structKeyExists( parsed, "links" ) ? parsed.links : [] );
+
+        for ( var n in nodesIn ) {
+            var nId = structKeyExists( n, "id" ) ? n.id : ( structKeyExists( n, "name" ) ? n.name : "" );
+            var nLabel = structKeyExists( n, "label" ) ? n.label : nId;
+            var nType = structKeyExists( n, "type" ) ? n.type : "GRAPHIFY_NODE";
+            var srcLoc = structKeyExists( n, "source_location" ) ? n.source_location : "";
+            var sFile = listLen( srcLoc, ":" ) > 1 ? listFirst( srcLoc, ":" ) : srcLoc;
+            var sLine = listLen( srcLoc, ":" ) > 1 && isNumeric( listLast( srcLoc, ":" ) ) ? val( listLast( srcLoc, ":" ) ) : 1;
+
+            addNode(
+                id = nId,
+                label = nLabel,
+                type = nType,
+                sourceFile = sFile,
+                startLine = sLine,
+                metadata = n
+            );
+        }
+
+        for ( var e in edgesIn ) {
+            var s = structKeyExists( e, "source" ) ? ( isStruct( e.source ) ? e.source.id : e.source ) : "";
+            var t = structKeyExists( e, "target" ) ? ( isStruct( e.target ) ? e.target.id : e.target ) : "";
+            var rel = structKeyExists( e, "relation" ) ? e.relation : ( structKeyExists( e, "type" ) ? e.type : "CALLS" );
+            var cert = structKeyExists( e, "certainty" ) && isNumeric( e.certainty ) ? e.certainty : 1.0;
+
+            addEdge(
+                source = s,
+                target = t,
+                relationType = rel,
+                status = "OBSERVED",
+                certainty = cert
+            );
+        }
+
+        return {
+            "ok"         : true,
+            "nodesAdded" : arrayLen( nodesIn ),
+            "edgesAdded" : arrayLen( edgesIn )
+        };
+    }
+
+    /**
+     * Construye un grafo estructural especifico para un proyecto BoxLang / Poliglota
+     * inspeccionando clases, llamadas y modulos nativamente.
+     */
+    public struct function buildFromProject( required string projectPath ) {
+        var t0 = getTickCount();
+        var safeRoot = replace( arguments.projectPath, "\", "/", "all" );
+
+        // 1. Registrar el modulo principal
+        var appNodeId = "Module:FaultGraph-BX";
+        addNode( appNodeId, "FaultGraph-BX", "MODULE", safeRoot & "/box.json", 1, 1 );
+
+        // 2. Escanear archivos BoxLang
+        var bxFiles = directoryList( safeRoot, true, "path", "*.bx|*.bxs" );
+        for ( var f in bxFiles ) {
+            var normF = replace( f, "\", "/", "all" );
+            var relF = replace( normF, safeRoot & "/", "" );
+
+            if ( findNoCase( "reports", relF ) || findNoCase( "build", relF ) || findNoCase( "scratch", relF ) ) {
+                continue;
+            }
+
+            var fNodeId = "File:" & relF;
+            var fType = right( relF, 4 ) == ".bxs" ? "SCRIPT" : "CLASS";
+            addNode( fNodeId, relF, fType, relF, 1, 1 );
+            addEdge( appNodeId, fNodeId, "CONTAINS", "OBSERVED", 1.0, "box.json", 1 );
+
+            var fContent = fileRead( f );
+            inspectBoxLangFile( fNodeId, relF, fContent );
+        }
+
+        return {
+            "ok"         : true,
+            "durationMs" : getTickCount() - t0,
+            "nodeCount"  : getNodeCount(),
+            "edgeCount"  : getEdgeCount(),
+            "godNodes"   : getGodNodes( 5 )
+        };
+    }
+
+    /**
+     * Inspecciona simbolos, funciones y dependencias de un archivo BoxLang.
+     */
+    private void function inspectBoxLangFile( required string fileNodeId, required string relPath, required string content ) {
+        var lines = listToArray( arguments.content, char( 10 ), true );
+        var currentFuncNode = "";
+
+        for ( var i = 1; i <= arrayLen( lines ); i++ ) {
+            var line = trim( lines[ i ] );
+            if ( !len( line ) || left( line, 2 ) == "//" ) {
+                continue;
+            }
+
+            // Deteccion de funciones
+            if ( reFindNoCase( "(public|private|remote|package)?\s*(any|void|string|numeric|boolean|struct|array)?\s*function\s+([a-zA-Z0-9_]+)", line ) ) {
+                var funcMatches = reMatchNoCase( "function\s+([a-zA-Z0-9_]+)", line );
+                if ( arrayLen( funcMatches ) > 0 ) {
+                    var fName = trim( replaceNoCase( funcMatches[ 1 ], "function", "" ) );
+                    var funcNodeId = arguments.fileNodeId & "::" & fName;
+                    addNode( funcNodeId, fName, "FUNCTION", arguments.relPath, i, i );
+                    addEdge( arguments.fileNodeId, funcNodeId, "DECLARES", "OBSERVED", 1.0, arguments.relPath, i );
+                    currentFuncNode = funcNodeId;
+                }
+            }
+
+            // Deteccion de llamadas o instanciaciones: new models.XYZ()
+            if ( findNoCase( "new models.", line ) || findNoCase( "new agents.", line ) || findNoCase( "new target_app.", line ) ) {
+                var newMatches = reMatchNoCase( "new\s+([a-zA-Z0-9_.]+)", line );
+                for ( var nm in newMatches ) {
+                    var targetClass = trim( replace( nm, "new", "" ) );
+                    var targetNodeId = "Class:" & targetClass;
+                    addNode( targetNodeId, targetClass, "CLASS", arguments.relPath, i, i );
+                    var callerId = len( currentFuncNode ) ? currentFuncNode : arguments.fileNodeId;
+                    addEdge( callerId, targetNodeId, "INSTANTIATES", "OBSERVED", 1.0, arguments.relPath, i );
+                }
+            }
+
+            // Deteccion de llamadas a fallback o contingencia
+            if ( findNoCase( "fallbackCharge", line ) ) {
+                var fbNodeId = "Function:fallbackCharge";
+                addNode( fbNodeId, "fallbackCharge", "FALLBACK_HANDLER", arguments.relPath, i, i );
+                var callerId2 = len( currentFuncNode ) ? currentFuncNode : arguments.fileNodeId;
+                addEdge( callerId2, fbNodeId, "FALLS_BACK_TO", "OBSERVED", 1.0, arguments.relPath, i );
+            }
+        }
+    }
+
+    /**
+     * Actualiza el grafo incrementalmente para una lista de archivos modificados.
+     */
+    public struct function updateIncremental( required array changedFiles ) {
+        var recomputedNodes = 0;
+        var recomputedEdges = 0;
+
+        for ( var f in arguments.changedFiles ) {
+            var normF = replace( f, "\", "/", "all" );
+            if ( structKeyExists( variables.fileNodeIndex, normF ) ) {
+                var nodesToInvalidate = variables.fileNodeIndex[ normF ];
+                // Remover aristas asociadas a los nodos invalidados
+                var newEdges = [];
+                for ( var e in variables.edges ) {
+                    if ( !arrayContains( nodesToInvalidate, e.source ) && !arrayContains( nodesToInvalidate, e.target ) ) {
+                        arrayAppend( newEdges, e );
+                    } else {
+                        recomputedEdges++;
+                    }
+                }
+                variables.edges = newEdges;
+
+                // Remover nodos
+                for ( var nId in nodesToInvalidate ) {
+                    structDelete( variables.nodes, nId );
+                    recomputedNodes++;
+                }
+                structDelete( variables.fileNodeIndex, normF );
+
+                // Re-analizar si el archivo existe
+                if ( fileExists( f ) ) {
+                    var fNodeId = "File:" & getFileFromPath( f );
+                    addNode( fNodeId, getFileFromPath( f ), "CLASS", normF, 1, 1 );
+                    inspectBoxLangFile( fNodeId, normF, fileRead( f ) );
+                }
+            }
+        }
+
+        return {
+            "ok"              : true,
+            "recomputedNodes" : recomputedNodes,
+            "recomputedEdges" : recomputedEdges,
+            "totalNodes"      : getNodeCount(),
+            "totalEdges"      : getEdgeCount()
+        };
+    }
+
+    /**
+     * Serializa el grafo completo a JSON compatible con herramientas de visualizacion.
+     */
+    public string function exportToJson() {
+        var nodeList = [];
+        for ( var k in variables.nodes ) {
+            arrayAppend( nodeList, variables.nodes[ k ] );
+        }
+        var out = {
+            "version"    : "1.0.0",
+            "generator"  : "FaultGraph-BX StructuralKnowledgeGraph",
+            "nodeCount"  : structCount( variables.nodes ),
+            "edgeCount"  : arrayLen( variables.edges ),
+            "nodes"      : nodeList,
+            "edges"      : variables.edges,
+            "godNodes"   : getGodNodes( 5 )
+        };
+        return jsonSerialize( out );
+    }
+
+    /**
+     * Exporta el grafo o subgrafo en sintaxis Mermaid Flowchart.
+     */
+    public string function exportToMermaid( struct subGraph = {} ) {
+        var nodesToRender = structCount( arguments.subGraph ) && structKeyExists( arguments.subGraph, "nodes" ) ? arguments.subGraph.nodes : variables.nodes;
+        var edgesToRender = structCount( arguments.subGraph ) && structKeyExists( arguments.subGraph, "edges" ) ? arguments.subGraph.edges : variables.edges;
+
+        var lines = [ "flowchart TD" ];
+        var idMap = {};
+        var counter = 0;
+
+        for ( var k in nodesToRender ) {
+            counter++;
+            var safeId = "N" & counter;
+            idMap[ k ] = safeId;
+            var n = nodesToRender[ k ];
+            var shapeLeft = "[";
+            var shapeRight = "]";
+            if ( n.type == "VULNERABILITY" ) {
+                shapeLeft = "((";
+                shapeRight = "))";
+            } else if ( n.type == "FALLBACK_HANDLER" ) {
+                shapeLeft = "{";
+                shapeRight = "}";
+            }
+            arrayAppend( lines, "  " & safeId & shapeLeft & """" & n.label & "<br/><small>" & n.type & "</small>""" & shapeRight );
+        }
+
+        for ( var e in edgesToRender ) {
+            if ( structKeyExists( idMap, e.source ) && structKeyExists( idMap, e.target ) ) {
+                var s = idMap[ e.source ];
+                var t = idMap[ e.target ];
+                var arrow = "-->";
+                if ( e.status == "DYNAMICALLY_VERIFIED" ) {
+                    arrow = "==>|VERIFIED: " & e.relationType & "|";
+                } else if ( e.status == "INFERRED" ) {
+                    arrow = "-.->|INFERRED: " & e.relationType & "|";
+                } else {
+                    arrow = "-->|" & e.relationType & "|";
+                }
+                arrayAppend( lines, "  " & s & " " & arrow & " " & t );
+            }
+        }
+
+        return arrayToList( lines, char( 10 ) );
+    }
+
+}

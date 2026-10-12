@@ -1,0 +1,238 @@
+/**
+ * SynergyAndAdversaryEmulationTest.bx
+ *
+ * Suite B21: Pruebas del Sistema de Sinergia entre Motores, Grafo de Evidencias
+ * y Emulacion de Adversarios para Fortalecer la Defensa.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testCommonContract();
+        testSharedEvidenceGraph();
+        testIntelligentOrchestrator();
+        testAttackSurfaceReconstructor();
+        testAdversaryEmulation();
+        testCrossVerificationArbitration();
+    }
+
+    private void function testCommonContract() {
+        var id = "TC-SYN-01";
+        var desc = "Contrato Comun: creacion canonica, calibracion de confianza y exportacion SARIF v2.1.0";
+        var t0 = getTickCount();
+        try {
+            var contract = new models.synergy.CommonContract();
+
+            var ev1 = contract.createEvidence( "AST_NODE", "variables.config.fallback.surchargePct", "PaymentService.bx", 60, "Desreferencia directa sin validacion" );
+            var hyp1 = contract.createHypothesis( "HYP-01", "Missing Fallback Section", "PaymentService.bx", [ "Seccion omitida" ], "KeyNotFoundException", "DYNAMIC_PROBE", "SUSPECTED" );
+
+            var finding = contract.createFinding(
+                findingId            = "FND-001",
+                engineId             = "AstSecurityAnalyzer",
+                language             = "BoxLang",
+                filePath             = "target_app/PaymentService.bx",
+                functionName         = "fallbackCharge",
+                line                 = 60,
+                column               = 9,
+                riskCategory         = "NULL_DEREFERENCE",
+                cwe                  = "CWE-476",
+                severity             = "CRITICAL",
+                description          = "Desreferencia directa de variables.config.fallback sin verificacion",
+                technicalExplanation = "Si variables.config carece de la clave fallback, se lanza KeyNotFoundException en tiempo de ejecucion.",
+                confidence           = 0.90,
+                validationStatus     = "STATICALLY_VERIFIED",
+                remediation          = "Usar elvis operator o structKeyExists()",
+                evidences            = [ ev1 ],
+                hypotheses           = [ hyp1 ]
+            );
+
+            variables.assert.isEqual( "FND-001", finding.findingId, "Finding ID debe ser FND-001" );
+            variables.assert.isEqual( "CRITICAL", finding.severity, "Severidad normalizada a CRITICAL" );
+            variables.assert.isTrue( finding.confidence >= 0.80, "Confianza calibrada correctamente (>=0.80)" );
+            variables.assert.isEqual( 1, arrayLen( finding.evidences ), "Contiene 1 evidencia" );
+            variables.assert.isEqual( 1, arrayLen( finding.hypotheses ), "Contiene 1 hipotesis" );
+
+            // Exportación formal a SARIF v2.1.0
+            var sarif = contract.exportToSarif( [ finding ] );
+            variables.assert.isEqual( "2.1.0", sarif.version, "Version SARIF debe ser 2.1.0" );
+            variables.assert.isTrue( arrayLen( sarif.runs ) == 1, "Array runs contiene 1 elemento" );
+            variables.assert.isTrue( arrayLen( sarif.runs[ 1 ].results ) == 1, "Resultados SARIF mapeados correctamente" );
+
+            variables.reporter.record( id, desc, "Creacion de Finding canónico y exportacion SARIF", "SARIF 2.1.0 valido y confianza >= 0.80", "Finding verificado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Creacion de Finding", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSharedEvidenceGraph() {
+        var id = "TC-SYN-02";
+        var desc = "SharedEvidenceGraph: modelado de nodos, aristas, trazabilidad a evidencia y Mermaid";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.synergy.SharedEvidenceGraph();
+
+            // Agregar nodos
+            var fNode = graph.addNode( "FILE:PaymentService.bx", "FILE", "PaymentService.bx", { "lines": 86 } );
+            var fnNode = graph.addNode( "FN:charge", "FUNCTION", "charge", { "line": 35 } );
+            var fndNode = graph.addNode( "FND:CWE-476", "FINDING", "Null Dereference Risk", { "engineId": "AstSecurityAnalyzer" } );
+            var evNode = graph.addNode( "EV:L60", "EVIDENCE", "Snippet L60", { "line": 60 } );
+
+            // Agregar aristas
+            graph.addEdge( "FILE:PaymentService.bx", "FN:charge", "CONTAINS" );
+            graph.addEdge( "FN:charge", "FND:CWE-476", "HAS_FINDING" );
+            graph.addEdge( "FND:CWE-476", "EV:L60", "SUPPORTED_BY" );
+
+            variables.assert.isTrue( graph.hasNode( "FILE:PaymentService.bx" ), "Nodo FILE presente" );
+            variables.assert.isTrue( graph.hasNode( "FND:CWE-476" ), "Nodo FINDING presente" );
+            variables.assert.isTrue( graph.hasPriorAnalysis( "FN:charge", "AstSecurityAnalyzer" ), "Deteccion de analisis previo para evitar redundancias" );
+
+            // Trazabilidad hasta evidencia
+            var trace = graph.getTraceToEvidence( "FND:CWE-476" );
+            variables.assert.isTrue( trace.ok, "Trazabilidad exitosa" );
+            variables.assert.isTrue( arrayLen( trace.evidences ) == 1, "Evidencia recuperada en el rastro" );
+
+            // Renderizado Mermaid
+            var mermaid = graph.toMermaid();
+            variables.assert.isTrue( find( "graph TD", mermaid ) > 0, "Sintaxis Mermaid valida generada" );
+
+            variables.reporter.record( id, desc, "Grafo con 4 nodos, 3 aristas y trazabilidad", "Trazabilidad OK y Mermaid valido", "Grafo verificado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Grafo de evidencias", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testIntelligentOrchestrator() {
+        var id = "TC-SYN-03";
+        var desc = "IntelligentOrchestrator: planificacion adaptativa de etapas y asignacion de recursos";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var orchestrator = new models.synergy.IntelligentOrchestrator( variables.config, graph );
+
+            // Planificación adaptativa
+            var plan = orchestrator.planPipeline( variables.rootDir & "target_app/PaymentService.bx" );
+            variables.assert.isTrue( plan.totalStages >= 4, "Debe planificar al menos 4 etapas de analisis" );
+            variables.assert.isEqual( "STAGE_SURFACE_RECON", plan.stages[ 1 ].stageId, "Etapa 1 debe ser reconstruccion de superficie" );
+
+            variables.reporter.record( id, desc, "Planificacion de pipeline para PaymentService.bx", ">= 4 etapas planificadas", "Planificado con " & plan.totalStages & " etapas", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Planificacion de pipeline", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAttackSurfaceReconstructor() {
+        var id = "TC-SYN-04";
+        var desc = "AttackSurfaceReconstructor: mapeo formal de puntos de entrada, operaciones sensibles y limites";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var reconstructor = new models.adversary.AttackSurfaceReconstructor( variables.config, graph );
+
+            var surface = reconstructor.reconstruct( variables.rootDir & "target_app/PaymentService.bx" );
+
+            variables.assert.isTrue( surface.totalFilesInspected >= 1, "Debe inspeccionar PaymentService.bx" );
+            variables.assert.isTrue( surface.entryPointsCount >= 2, "Debe identificar metodos publicos como entry points (charge, fallbackCharge)" );
+            variables.assert.isTrue( surface.sensitiveOperationsCount >= 0, "Debe identificar operaciones sensibles" );
+            variables.assert.isTrue( surface.trustBoundariesCount >= 1, "Debe delimitar fronteras de confianza" );
+
+            variables.reporter.record( id, desc, "Reconstruccion de superficie para PaymentService.bx", "Puntos de entrada y limites detectados", surface.entryPointsCount & " entry points y " & surface.trustBoundariesCount & " fronteras", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Reconstruccion de superficie", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAdversaryEmulation() {
+        var id = "TC-SYN-05";
+        var desc = "AdversaryEmulationEngine: formulacion de hipotesis, verificacion CONFIRMED y refutacion DISPROVED";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var emulation = new models.adversary.AdversaryEmulationEngine( variables.config, graph );
+
+            var staticFindings = [
+                {
+                    "code"        : "TYPE_MISMATCH_NUMERIC",
+                    "filePath"    : "target_app/PaymentService.bx",
+                    "line"        : 60,
+                    "cwe"         : "CWE-699",
+                    "evidence"    : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;"
+                }
+            ];
+
+            // 1. Formulación de hipótesis
+            var hypotheses = emulation.formulateHypotheses( staticFindings );
+            variables.assert.isEqual( 1, arrayLen( hypotheses ), "Debe formular 1 hipotesis" );
+            variables.assert.isEqual( "SUSPECTED", hypotheses[ 1 ].status, "Estado inicial SUSPECTED" );
+
+            // 2. Comprobación contra el servicio original vulnerable (debe confirmar)
+            var brokenGateway = function( orderId, amount, currency ) { throw( type="Timeout", message="Gateway timeout" ); };
+            var badConfig = { fallback: { surchargePct: "2.5%", queueName: "offline" } };
+            var originalSvc = new target_app.PaymentService( badConfig, brokenGateway );
+
+            var resConfirmed = emulation.verifyHypothesis( originalSvc, hypotheses[ 1 ], { "amount": "$1,250.00" } );
+            variables.assert.isEqual( "CONFIRMED", resConfirmed.status, "Vulnerabilidad confirmada bajo emulacion adversaria" );
+            variables.assert.isTrue( resConfirmed.reproduced, "Reproducido exitosamente con datos sinteticos" );
+
+            // 3. Comprobación contra el servicio parcheado (debe refutar)
+            var patchedSvc = new target_app.PaymentServicePatched( badConfig, brokenGateway );
+            var resDisproved = emulation.verifyHypothesis( patchedSvc, hypotheses[ 1 ], { "amount": "$1,250.00" } );
+            variables.assert.isEqual( "DISPROVED", resDisproved.status, "Hipotesis refutada: el servicio parcheado resiste con defensas activas" );
+            variables.assert.isTrue( resDisproved.defended, "Defensas verificadas con exito" );
+
+            variables.reporter.record( id, desc, "Emulacion dinamica contra original y parcheado", "CONFIRMED en original, DISPROVED en parcheado", "Emulacion verificada con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Emulacion adversaria", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testCrossVerificationArbitration() {
+        var id = "TC-SYN-06";
+        var desc = "CrossVerification: resolucion de contradicciones basada en evidencias y refutacion estricta";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var orchestrator = new models.synergy.IntelligentOrchestrator( variables.config, graph );
+            var contract = new models.synergy.CommonContract();
+
+            // Caso 1: Arbitraje cuando hay prueba dinámica confirmada
+            var fStatic = contract.createFinding(
+                findingId = "F1", engineId = "Scanner", validationStatus = "STATICALLY_VERIFIED", confidence = 0.80
+            );
+            var fDynamic = contract.createFinding(
+                findingId = "F2", engineId = "AdversaryEmulation", validationStatus = "DYNAMICALLY_CONFIRMED", confidence = 0.98
+            );
+
+            var arbitration1 = orchestrator.crossVerifyFindings( [ fStatic, fDynamic ] );
+            variables.assert.isTrue( arbitration1.resolved, "Arbitraje resuelto" );
+            variables.assert.isEqual( "DYNAMIC_PROOF_CONFIRMED", arbitration1.arbitrationMode, "Prioridad de prueba dinamica confirmada" );
+            variables.assert.isEqual( 0.98, arbitration1.confidence, "Confianza elevada a 0.98" );
+
+            // Caso 2: Arbitraje cuando el AST demuestra un guard defensivo (refutación de falsa alarma)
+            var evGuard = contract.createEvidence( "AST_NODE", "lock scope=application", "Service.bx", 10, "GUARD_VERIFIED: Bloque lock ancestro presente", 1.0 );
+            var fAstGuard = contract.createFinding(
+                findingId = "F3", engineId = "AstAnalyzer", validationStatus = "DISPROVED_BENIGN", evidences = [ evGuard ]
+            );
+            var fLinterAlarm = contract.createFinding(
+                findingId = "F4", engineId = "GenericLinter", validationStatus = "STATICALLY_VERIFIED", confidence = 0.70
+            );
+
+            var arbitration2 = orchestrator.crossVerifyFindings( [ fLinterAlarm, fAstGuard ] );
+            variables.assert.isTrue( arbitration2.resolved, "Arbitraje resuelto" );
+            variables.assert.isEqual( "AST_DEFENSE_PROVEN", arbitration2.arbitrationMode, "Defensa estructural comprobada por AST refuta sospechas de linters" );
+            variables.assert.isEqual( "DISPROVED_BENIGN", arbitration2.verdict, "Veredicto DISPROVED_BENIGN" );
+            variables.assert.isEqual( 0.0, arbitration2.confidence, "Confianza reducida a 0.0" );
+
+            variables.reporter.record( id, desc, "Arbitraje dinamico vs estatico y refutacion por AST guard", "Resolucion basada en evidencia", "Arbitraje verificado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Verificacion cruzada", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

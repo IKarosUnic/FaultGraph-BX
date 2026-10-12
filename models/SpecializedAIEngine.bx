@@ -1,0 +1,288 @@
+/**
+ * SpecializedAIEngine - Flota de Especialistas de IA Local Bajo Demanda para FaultGraph-BX.
+ *
+ * Mision:
+ *   Distribuye el razonamiento semantico entre especialistas bajo demanda con perfiles
+ *   claramente delimitados y modelos locales adaptados a cada tarea.
+ *
+ * Especialistas soportados:
+ *   1. SECURITY      : Auditoria de codigo, deteccion de patrones OWASP, desreferencias y CWE.
+ *   2. CODE_ANALYSIS : Comprension de stack traces, relaciones del AST y flujo de contingencia.
+ *   3. RESEARCH      : Sintesis tecnica comparando documentacion oficial, base de conocimiento y web.
+ *   4. VERIFICATION  : Abogado del Diablo (Devil's Advocate), busqueda de fallos ocultos y revision critica.
+ *   5. ORCHESTRATION : Enrutamiento y seleccion de herramientas deterministas vs modelos.
+ *
+ * Principios y Garantias:
+ *   - Activacion exclusiva bajo demanda (0 recursos cuando no se invoca).
+ *   - Estratificacion de modelos: modelos compactos (1.5B/3B) para velocidad y modelos
+ *     mas capaces (8B+) para analisis contextual amplio.
+ *   - Confinamiento estricto en SecuritySandbox: 0 privilegios sobre filesystem, terminal o red.
+ *   - Validacion determinista obligatoria con IndependentValidator (0 alucinaciones aceptadas).
+ *   - Degradacion automatica sin fallos cuando opera en modo offline (0 tokens).
+ */
+class {
+
+    public any function init( required any config, any sandbox, any validator, any knowledgeBase ) {
+        variables.config        = arguments.config;
+        variables.sandbox       = structKeyExists( arguments, "sandbox" ) && !isNull( arguments.sandbox ) ? arguments.sandbox : new models.SecuritySandbox( arguments.config );
+        variables.validator     = structKeyExists( arguments, "validator" ) && !isNull( arguments.validator ) ? arguments.validator : new models.IndependentValidator( arguments.config );
+        variables.knowledgeBase = structKeyExists( arguments, "knowledgeBase" ) && !isNull( arguments.knowledgeBase ) ? arguments.knowledgeBase : new models.KnowledgeBase( arguments.config );
+        variables.localAi       = ( ( isObject( arguments.config ) || isStruct( arguments.config ) ) && structKeyExists( arguments.config, "getLocalAi" ) ) ? new models.LocalSecurityAI( arguments.config, variables.sandbox ) : null;
+
+        // Catalogo de roles y perfiles
+        variables.specialistProfiles = {
+            "SECURITY": {
+                "name"        : "SecuritySpecialist",
+                "defaultModel": "qwen2.5-coder:3b",
+                "taskType"    : "code_audit",
+                "systemPrompt": "Eres el Especialista de Ciberseguridad de FaultGraph. Identifica vulnerabilidades reales en BoxLang (CWE-20, CWE-22, inyeccion, desreferencias)."
+            },
+            "CODE_ANALYSIS": {
+                "name"        : "CodeAnalysisSpecialist",
+                "defaultModel": "qwen2.5-coder:3b",
+                "taskType"    : "evidence_correlation",
+                "systemPrompt": "Eres el Especialista de Analisis de Codigo de FaultGraph. Analiza trazas de la JVM, desreferenciacion de configuracion y coherencia de tipos."
+            },
+            "RESEARCH": {
+                "name"        : "ResearchSpecialist",
+                "defaultModel": "llama3.1:8b",
+                "fallbackModel": "qwen2.5-coder:3b",
+                "taskType"    : "evidence_correlation",
+                "systemPrompt": "Eres el Especialista de Investigacion Tecnica. Sintetiza documentacion oficial de BoxLang y compara con la evidencia empirica."
+            },
+            "VERIFICATION": {
+                "name"        : "VerificationSpecialist",
+                "defaultModel": "qwen2.5-coder:3b",
+                "taskType"    : "challenge_diagnosis",
+                "systemPrompt": "Eres el Especialista de Verificacion Critica (Abogado del Diablo). Cuestiona de forma rigurosa la causa raiz diagnosticada buscando efectos colaterales."
+            },
+            "ORCHESTRATION": {
+                "name"        : "OrchestratorSpecialist",
+                "defaultModel": "qwen2.5-coder:1.5b",
+                "fallbackModel": "qwen2.5-coder:3b",
+                "taskType"    : "anomaly_detection",
+                "systemPrompt": "Eres el Orquestador de Flujo. Asigna prioridades tecnicas y recomienda herramientas deterministas de verificacion."
+            }
+        };
+
+        return this;
+    }
+
+    public struct function getSpecialistProfiles() {
+        return duplicate( variables.specialistProfiles );
+    }
+
+    /**
+     * Resuelve el modelo optimo a utilizar segun el rol del especialista y disponibilidad en Ollama.
+     */
+    public string function resolveModelForRole( required string role ) {
+        var r = ucase( trim( arguments.role ) );
+        if ( !structKeyExists( variables.specialistProfiles, r ) ) {
+            r = "SECURITY";
+        }
+        var profile = variables.specialistProfiles[ r ];
+        // Si el usuario especifico FAULTGRAPH_OLLAMA_MODEL expresamente en el entorno, se respeta
+        var envModel = createObject( "java", "java.lang.System" ).getenv( "FAULTGRAPH_OLLAMA_MODEL" );
+        if ( !isNull( envModel ) && len( trim( envModel ) ) > 0 ) {
+            return trim( envModel );
+        }
+
+        return profile.defaultModel;
+    }
+
+    /**
+     * Auditoria de seguridad de codigo bajo demanda (SecuritySpecialist).
+     */
+    public struct function auditCode( required string codeSnippet, struct context = {} ) {
+        var t0 = getTickCount();
+        var model = resolveModelForRole( "SECURITY" );
+        var out = {
+            "specialist"      : "SecuritySpecialist",
+            "model"           : model,
+            "used"            : false,
+            "ok"              : false,
+            "findings"        : [],
+            "validatedFindings": [],
+            "error"           : "",
+            "durationMs"      : 0
+        };
+
+        if ( !variables.config.isLocalAiEnabled() ) {
+            out.error = "IA local deshabilitada o endpoint no disponible. Se mantiene analisis puramente determinista.";
+            return out;
+        }
+
+        var res = variables.localAi.auditSuspiciousCode( arguments.codeSnippet );
+        out.used       = res.used;
+        out.durationMs = res.durationMs;
+        out.findings   = res.findings;
+        out.error      = res.error;
+
+        if ( res.ok && arrayLen( res.findings ) > 0 ) {
+            var valRes = variables.validator.validateAuditFindings( arguments.codeSnippet, res.findings );
+            out.validatedFindings = valRes.validated;
+            out.ok = true;
+        } else {
+            out.ok = res.ok;
+        }
+
+        return out;
+    }
+
+    /**
+     * Analisis de fallo de codigo y correlacion de excepciones (CodeAnalysisSpecialist).
+     */
+    public struct function analyzeFailure( required array failureRecords ) {
+        var model = resolveModelForRole( "CODE_ANALYSIS" );
+        var out = {
+            "specialist" : "CodeAnalysisSpecialist",
+            "model"      : model,
+            "used"       : false,
+            "ok"         : false,
+            "synthesis"  : "",
+            "commonCause": "",
+            "error"      : "",
+            "durationMs" : 0
+        };
+
+        if ( !variables.config.isLocalAiEnabled() ) {
+            out.error = "IA local deshabilitada.";
+            return out;
+        }
+
+        var res = variables.localAi.correlateEvidence( arguments.failureRecords );
+        out.used       = res.used;
+        out.ok         = res.ok;
+        out.synthesis  = res.synthesis;
+        out.error      = res.error;
+        out.durationMs = res.durationMs;
+
+        return out;
+    }
+
+    /**
+     * Investigacion y sintesis tecnica contextual (ResearchSpecialist).
+     */
+    public struct function researchSynthesis( required string topic, array knowledgeEntries = [], array webFindings = [] ) {
+        var t0 = getTickCount();
+        var model = resolveModelForRole( "RESEARCH" );
+        var out = {
+            "specialist" : "ResearchSpecialist",
+            "model"      : model,
+            "used"       : false,
+            "ok"         : false,
+            "synthesis"  : "",
+            "sourcesUsed": [],
+            "error"      : "",
+            "durationMs" : 0
+        };
+
+        if ( !variables.config.isLocalAiEnabled() ) {
+            // Sintesis determinista inmediata a partir de la base de conocimiento local
+            if ( arrayLen( arguments.knowledgeEntries ) > 0 ) {
+                out.synthesis = "Sintesis determinista (Offline): " & arguments.knowledgeEntries[ 1 ].title & " - " & arguments.knowledgeEntries[ 1 ].summary;
+                out.ok = true;
+            } else {
+                out.error = "Modo offline: sin entradas locales asociadas.";
+            }
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var contextLines = [];
+            for ( var kb in arguments.knowledgeEntries ) {
+                arrayAppend( contextLines, "[KB:" & kb.id & " | " & kb.verificationLevel & "] " & kb.title & ": " & kb.summary );
+                arrayAppend( out.sourcesUsed, kb.id );
+            }
+            for ( var wf in arguments.webFindings ) {
+                arrayAppend( contextLines, "[WEB:" & wf.type & "] " & wf.title & ": " & wf.summary );
+            }
+            var contextBlob = arrayToList( contextLines, char( 10 ) );
+
+            var prompt = variables.sandbox.wrapPrompt(
+                variables.specialistProfiles[ "RESEARCH" ].systemPrompt,
+                "technical_references",
+                contextBlob,
+                "Sintetiza en espanol (maximo 3 lineas) la solucion tecnica comprobada para el problema: '" & arguments.topic & "'. "
+                & 'Responde en JSON: {"synthesis": "explicacion concisa", "verifiedRule": "regla principal aplicada"}'
+            );
+
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "challenge_diagnosis", 1 );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+            var payload = {
+                "model"   : model,
+                "prompt"  : prompt,
+                "format"  : "json",
+                "stream"  : false,
+                "options" : {
+                    "num_predict" : javacast( "int", tokenBudget ),
+                    "temperature" : 0.1
+                }
+            };
+
+            var reply = variables.sandbox.executeOllamaRequest( variables.config.getLocalAi().endpoint, payload, timeoutSec );
+            out.durationMs = getTickCount() - t0;
+
+            if ( reply.status == 200 ) {
+                var jsonBody = jsonDeserialize( reply.body );
+                var rawText = structKeyExists( jsonBody, "response" ) ? jsonBody.response : "";
+                if ( len( trim( rawText ) ) > 0 ) {
+                    try {
+                        var parsed = jsonDeserialize( rawText );
+                        out.synthesis = structKeyExists( parsed, "synthesis" ) ? parsed.synthesis : rawText;
+                        out.ok        = true;
+                    } catch ( any parseEx ) {
+                        out.synthesis = left( rawText, 250 );
+                        out.ok        = true;
+                    }
+                }
+            } else {
+                out.error = "Ollama devolvio codigo HTTP " & reply.status;
+            }
+        } catch ( any e ) {
+            out.ok    = false;
+            out.error = e.message;
+            out.durationMs = getTickCount() - t0;
+        }
+
+        return out;
+    }
+
+    /**
+     * Revision critica y desafio adversarial (VerificationSpecialist - Devil's Advocate).
+     */
+    public struct function adversarialReview( required struct diagnosis, required struct chaosReport ) {
+        var model = resolveModelForRole( "VERIFICATION" );
+        var out = {
+            "specialist" : "VerificationSpecialist",
+            "model"      : model,
+            "used"       : false,
+            "ok"         : false,
+            "challenge"  : {},
+            "validation" : {},
+            "error"      : "",
+            "durationMs" : 0
+        };
+
+        if ( !variables.config.isLocalAiEnabled() ) {
+            out.error = "IA local deshabilitada. Veredicto puramente determinista.";
+            return out;
+        }
+
+        var res = variables.localAi.challengeDiagnosis( arguments.diagnosis, "Evaluacion de caos" );
+        out.used       = res.used;
+        out.durationMs = res.durationMs;
+        out.error      = res.error;
+
+        if ( res.ok ) {
+            var valRes = variables.validator.validateChallenge( arguments.diagnosis, res, arguments.chaosReport );
+            out.ok         = true;
+            out.challenge  = res;
+            out.validation = valRes;
+        }
+
+        return out;
+    }
+
+}

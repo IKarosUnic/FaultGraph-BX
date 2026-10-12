@@ -1,0 +1,167 @@
+/**
+ * ResilienceAndAlertingTest - Banco de pruebas para CircuitBreaker, WebhookNotifier y Vaccine Packs.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testCircuitBreakerClosedToOpen();
+        testCircuitBreakerHalfOpenRecovery();
+        testWebhookNotifierFormattingAndDryRun();
+        testVaccinePackExportAndImport();
+    }
+
+    private void function testCircuitBreakerClosedToOpen() {
+        var id = "TC-RES-01";
+        var scenario = "CircuitBreaker: transicion de CLOSED a OPEN tras superar umbral y fast-fail en fallback";
+        var t0 = getTickCount();
+        try {
+            var breaker = new models.resilience.CircuitBreaker( failureThreshold = 2, resetTimeoutMs = 1000, name = "test-gateway" );
+
+            variables.assert.isEqual( "CLOSED", breaker.getState(), "Estado inicial debe ser CLOSED" );
+
+            var failingAction = function() { throw( type="RemoteTimeout", message="Gateway timeout" ); };
+            var fallbackAction = function( err ) { return { "status": "QUEUED_OFFLINE", "cause": err.type }; };
+
+            // 1er fallo -> sigue CLOSED
+            var r1 = breaker.execute( failingAction, fallbackAction );
+            variables.assert.isEqual( "QUEUED_OFFLINE", r1.status );
+            variables.assert.isEqual( "CLOSED", breaker.getState() );
+
+            // 2do fallo -> alcanza threshold = 2 -> pasa a OPEN
+            var r2 = breaker.execute( failingAction, fallbackAction );
+            variables.assert.isEqual( "QUEUED_OFFLINE", r2.status );
+            variables.assert.isEqual( "OPEN", breaker.getState() );
+
+            // 3ra llamada -> Fast-fail inmediato (sin intentar el primario)
+            var primaryCalled = false;
+            var probePrimary = function() { primaryCalled = true; return "OK"; };
+            var r3 = breaker.execute( probePrimary, fallbackAction );
+
+            variables.assert.isFalse( primaryCalled, "El primario no debe invocarse cuando el circuito esta OPEN" );
+            variables.assert.isEqual( "CircuitBreakerOpenException", r3.cause, "Debe reportar causa CircuitBreakerOpenException" );
+
+            var metrics = breaker.getMetrics();
+            variables.assert.isEqual( 3, metrics.totalCalls );
+            variables.assert.isEqual( 3, metrics.fallbackCalls );
+            variables.assert.isTrue( metrics.trippedCount >= 1 );
+
+            variables.reporter.record( id, scenario, "Transicion CLOSED -> OPEN", "Fast-fail verificado sin bloquear hilos", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Transicion CLOSED -> OPEN", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testCircuitBreakerHalfOpenRecovery() {
+        var id = "TC-RES-02";
+        var scenario = "CircuitBreaker: recuperacion de HALF_OPEN a CLOSED tras sondeo exitoso";
+        var t0 = getTickCount();
+        try {
+            var breaker = new models.resilience.CircuitBreaker( failureThreshold = 1, resetTimeoutMs = 50, halfOpenSuccessThreshold = 1, name = "test-recovery" );
+
+            // Forzar a OPEN
+            breaker.forceOpen();
+            variables.assert.isEqual( "OPEN", breaker.getState() );
+
+            // Esperar que expire el resetTimeoutMs
+            sleep( 70 );
+
+            // Al consultar estado tras el timeout debe pasar a HALF_OPEN
+            variables.assert.isEqual( "HALF_OPEN", breaker.getState() );
+
+            // Ejecutar llamada exitosa durante HALF_OPEN
+            var healthyAction = function() { return { "status": "APPROVED", "authCode": "TEST-OK" }; };
+            var res = breaker.execute( healthyAction, null );
+
+            variables.assert.isEqual( "APPROVED", res.status );
+            variables.assert.isEqual( "CLOSED", breaker.getState(), "Debe restablecerse a CLOSED tras sondeo exitoso" );
+
+            variables.reporter.record( id, scenario, "Recuperacion HALF_OPEN -> CLOSED", "Circuito restablecido a CLOSED", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Recuperacion HALF_OPEN", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testWebhookNotifierFormattingAndDryRun() {
+        var id = "TC-NOTIF-01";
+        var scenario = "WebhookNotifier: formateo multicanal (Slack, Discord, Generic) y modo dry-run seguro";
+        var t0 = getTickCount();
+        try {
+            var notifierSlack = new models.alerting.WebhookNotifier( "", "slack", true );
+            variables.assert.isTrue( notifierSlack.isDryRun() );
+
+            var mockNotice = {
+                "incidentNumber" : 42,
+                "timestamp"      : "2026-10-11 14:00:00",
+                "source"         : "target_app/PaymentService.bx",
+                "diagnosis"      : {
+                    "causes": [
+                        { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL", "title": "Desreferencia nula" }
+                    ]
+                }
+            };
+
+            var slackRes = notifierSlack.notify( mockNotice );
+            variables.assert.isTrue( slackRes.ok );
+            variables.assert.isEqual( "DRY_RUN", slackRes.mode );
+            variables.assert.isTrue( structKeyExists( slackRes.payload, "blocks" ), "Slack payload debe contener blocks" );
+            variables.assert.isEqual( "header", slackRes.payload.blocks[ 1 ].type );
+
+            var notifierDiscord = new models.alerting.WebhookNotifier( "", "discord", true );
+            var discordRes = notifierDiscord.notify( mockNotice );
+            variables.assert.isTrue( discordRes.ok );
+            variables.assert.isTrue( structKeyExists( discordRes.payload, "embeds" ), "Discord payload debe contener embeds" );
+
+            var notifierGen = new models.alerting.WebhookNotifier( "", "generic", true );
+            var genRes = notifierGen.notify( mockNotice );
+            variables.assert.isTrue( genRes.ok );
+            variables.assert.isEqual( "INCIDENT_ALERT", genRes.payload.event );
+
+            variables.reporter.record( id, scenario, "WebhookNotifier", "Slack, Discord y Generic formateados correctamente", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "WebhookNotifier", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testVaccinePackExportAndImport() {
+        var id = "TC-VAC-01";
+        var scenario = "Memoria Federada: exportacion e importacion de Vaccine Packs entre repositorios";
+        var t0 = getTickCount();
+        var tempPack = variables.rootDir & "scratch/test-vaccines.json";
+        try {
+            var kb = new models.KnowledgeBase( variables.config );
+            var exportRes = kb.exportVaccinePack( tempPack, "TestVaccinePack" );
+
+            variables.assert.isTrue( exportRes.ok, "Exportacion debe ser exitosa" );
+            variables.assert.isTrue( fileExists( tempPack ), "El archivo de paquete debe existir" );
+            variables.assert.isTrue( exportRes.entryCount > 0, "Debe contener reglas exportadas" );
+
+            // Importar en una nueva instancia
+            var kbConsumer = new models.KnowledgeBase( variables.config );
+            var importRes = kbConsumer.importVaccinePack( tempPack );
+
+            variables.assert.isTrue( importRes.ok, "Importacion debe ser exitosa" );
+            variables.assert.isEqual( "TestVaccinePack", importRes.packName );
+            variables.assert.isTrue( importRes.totalInPack > 0 );
+
+            if ( fileExists( tempPack ) ) {
+                fileDelete( tempPack );
+            }
+
+            variables.reporter.record( id, scenario, "Vaccine Pack", "Exportacion e importacion confirmadas", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempPack ) ) {
+                try { fileDelete( tempPack ); } catch ( any fe ) {}
+            }
+            variables.reporter.record( id, scenario, "Vaccine Pack", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

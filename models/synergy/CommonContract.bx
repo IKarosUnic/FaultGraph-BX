@@ -1,0 +1,268 @@
+/**
+ * CommonContract.bx - Contrato Común de Interoperabilidad y Esquema Canónico para FaultGraph-BX.
+ *
+ * Misión:
+ *   1. Define la estructura de datos unificada para hallazgos, evidencias e hipótesis de todos los motores.
+ *   2. Compatible con motores existentes (RepositoryScanner, AstSecurityAnalyzer, ChaosEngine, Healer).
+ *   3. Soporta interoperabilidad directa con OASIS SARIF v2.1.0 y extensiones de grafo internas.
+ *   4. Calibra explícitamente el nivel de confianza (0.0 a 1.0) con significado cuantitativo.
+ *   5. Mantiene trazabilidad total hacia las evidencias originales y el motor de origen.
+ */
+class {
+
+    public any function init() {
+        return this;
+    }
+
+    /**
+     * Construye un hallazgo canónico completo con todas las dimensiones exigidas.
+     */
+    public struct function createFinding(
+        required string findingId,
+        required string engineId,
+        string language = "Unknown",
+        string filePath = "",
+        string functionName = "",
+        numeric line = 1,
+        numeric column = 1,
+        string riskCategory = "VULNERABILITY",
+        string cwe = "CWE-699",
+        string severity = "HIGH",
+        string description = "",
+        string technicalExplanation = "",
+        numeric confidence = 0.90,
+        string validationStatus = "UNVERIFIED",
+        string remediation = "",
+        array evidences = [],
+        array hypotheses = [],
+        array relations = [],
+        array testsExecuted = [],
+        array regressionTests = [],
+        array knownLimitations = []
+    ) {
+        var normSeverity = normalizeSeverity( arguments.severity );
+        var calConfidence = calibrateConfidence( arguments.confidence, arguments.validationStatus, arguments.evidences );
+
+        return {
+            "findingId"            : arguments.findingId,
+            "engineId"             : arguments.engineId,
+            "language"             : arguments.language,
+            "filePath"             : replace( arguments.filePath, "\", "/", "all" ),
+            "functionName"         : arguments.functionName,
+            "location"             : {
+                "line"  : max( 1, arguments.line ),
+                "column": max( 1, arguments.column )
+            },
+            "riskCategory"         : arguments.riskCategory,
+            "cwe"                  : arguments.cwe,
+            "severity"             : normSeverity,
+            "description"          : arguments.description,
+            "technicalExplanation" : len( trim( arguments.technicalExplanation ) ) ? arguments.technicalExplanation : arguments.description,
+            "confidence"           : calConfidence,
+            "confidenceLevel"      : getConfidenceLabel( calConfidence ),
+            "validationStatus"     : arguments.validationStatus,
+            "remediation"          : arguments.remediation,
+            "evidences"            : arguments.evidences,
+            "hypotheses"           : arguments.hypotheses,
+            "relations"            : arguments.relations,
+            "testsExecuted"        : arguments.testsExecuted,
+            "regressionTests"      : arguments.regressionTests,
+            "knownLimitations"     : arguments.knownLimitations,
+            "createdAt"            : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+    }
+
+    /**
+     * Normaliza la severidad a niveles estándar OASIS SARIF / CVSS.
+     */
+    public string function normalizeSeverity( required string sev ) {
+        var u = uCase( trim( arguments.sev ) );
+        if ( u == "CRITICAL" || u == "HIGH" || u == "MEDIUM" || u == "LOW" || u == "INFO" ) {
+            return u;
+        }
+        if ( u == "ERROR" )   { return "HIGH"; }
+        if ( u == "WARNING" ) { return "MEDIUM"; }
+        if ( u == "NOTE" )    { return "INFO"; }
+        return "HIGH";
+    }
+
+    /**
+     * Calibra cuantitativamente la confianza según el nivel de validación y volumen de evidencias.
+     * - Hipótesis sin contrastar: 0.40 - 0.60
+     * - Detección estática / AST intra-archivo: 0.70 - 0.85
+     * - Confirmada dinámicamente o por múltiples evidencias independientes: 0.90 - 1.00
+     * - Refutada: 0.00
+     */
+    public numeric function calibrateConfidence( required numeric rawConfidence, string status = "UNVERIFIED", array evidences = [] ) {
+        var conf = min( 1.0, max( 0.0, arguments.rawConfidence ) );
+
+        if ( arguments.status == "DISPROVED" || arguments.status == "DISPROVED_BENIGN" ) {
+            return 0.0;
+        }
+
+        if ( arguments.status == "DYNAMICALLY_CONFIRMED" ) {
+            // Confirmación dinámica reproducible eleva la confianza
+            conf = max( conf, 0.95 );
+        } else if ( arguments.status == "STATICALLY_VERIFIED" ) {
+            conf = min( 0.90, max( conf, 0.80 ) );
+        } else if ( arguments.status == "INCONCLUSIVE" ) {
+            conf = min( 0.50, conf );
+        }
+
+        // Si hay 2 o más evidencias independientes (ej. AST + Runtime trace), bonificar
+        if ( arrayLen( arguments.evidences ) >= 2 ) {
+            conf = min( 1.0, conf + 0.05 );
+        }
+
+        return round( conf * 100 ) / 100;
+    }
+
+    public string function getConfidenceLabel( required numeric confidence ) {
+        if ( arguments.confidence >= 0.90 ) { return "VERY_HIGH"; }
+        if ( arguments.confidence >= 0.75 ) { return "HIGH"; }
+        if ( arguments.confidence >= 0.50 ) { return "MEDIUM"; }
+        if ( arguments.confidence >= 0.25 ) { return "LOW"; }
+        return "NEGLIGIBLE";
+    }
+
+    /**
+     * Construye una hipótesis de explotación formal y comprobable.
+     */
+    public struct function createHypothesis(
+        required string hypothesisId,
+        required string attackVector,
+        string targetComponent = "",
+        array preconditions = [],
+        string expectedImpact = "",
+        string validationMechanism = "DYNAMIC_PROBE",
+        string status = "SUSPECTED"
+    ) {
+        return {
+            "hypothesisId"        : arguments.hypothesisId,
+            "attackVector"        : arguments.attackVector,
+            "targetComponent"     : arguments.targetComponent,
+            "preconditions"       : arguments.preconditions,
+            "expectedImpact"      : arguments.expectedImpact,
+            "validationMechanism" : arguments.validationMechanism,
+            "status"              : arguments.status, // SUSPECTED, CONFIRMED, DISPROVED, INCONCLUSIVE
+            "createdAt"           : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+    }
+
+    /**
+     * Construye una evidencia trazable.
+     */
+    public struct function createEvidence(
+        required string type, // AST_NODE, RUNTIME_TRACE, LOG_RECORD, CONFIG_VALUE, HTTP_PROBE
+        required string snippet,
+        string sourceFile = "",
+        numeric line = 0,
+        string observation = "",
+        numeric confidence = 1.0
+    ) {
+        return {
+            "type"        : arguments.type,
+            "snippet"     : trim( arguments.snippet ),
+            "sourceFile"  : replace( arguments.sourceFile, "\", "/", "all" ),
+            "line"        : arguments.line,
+            "observation" : arguments.observation,
+            "confidence"  : arguments.confidence,
+            "timestamp"   : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+    }
+
+    /**
+     * Convierte una lista de hallazgos canónicos a un documento formal OASIS SARIF v2.1.0 enriquecido.
+     */
+    public struct function exportToSarif( required array findings, string toolVersion = "3.0.0" ) {
+        var sarif = {
+            "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs"   : []
+        };
+
+        var rulesMap = {};
+        var driverRules = [];
+        var results = [];
+
+        for ( var f in arguments.findings ) {
+            var ruleId = structKeyExists( f, "cwe" ) && len( f.cwe ) ? f.cwe : ( structKeyExists( f, "riskCategory" ) ? f.riskCategory : "GENERIC_DEFECT" );
+            if ( !structKeyExists( rulesMap, ruleId ) ) {
+                var rDef = {
+                    "id"                  : ruleId,
+                    "name"                : replace( ruleId, "-", "_", "all" ),
+                    "shortDescription"    : { "text": f.description },
+                    "fullDescription"     : { "text": f.technicalExplanation },
+                    "defaultConfiguration": { "level": mapSeverityToSarifLevel( f.severity ) },
+                    "properties"          : { "cwe": [ f.cwe ] }
+                };
+                arrayAppend( driverRules, rDef );
+                rulesMap[ ruleId ] = arrayLen( driverRules ) - 1;
+            }
+
+            var lineNum = ( structKeyExists( f, "location" ) && structKeyExists( f.location, "line" ) ) ? f.location.line : 1;
+            var colNum  = ( structKeyExists( f, "location" ) && structKeyExists( f.location, "column" ) ) ? f.location.column : 1;
+            var snippetText = ( arrayLen( f.evidences ) > 0 && structKeyExists( f.evidences[ 1 ], "snippet" ) ) ? f.evidences[ 1 ].snippet : "";
+
+            var sarifRes = {
+                "ruleId"    : ruleId,
+                "ruleIndex" : rulesMap[ ruleId ],
+                "level"     : mapSeverityToSarifLevel( f.severity ),
+                "message"   : {
+                    "text": "[" & f.validationStatus & " | Confianza " & round( f.confidence * 100 ) & "%] " & f.description & " | Remediacion: " & f.remediation
+                },
+                "locations" : [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": f.filePath },
+                            "region": {
+                                "startLine"  : max( 1, lineNum ),
+                                "startColumn": max( 1, colNum ),
+                                "snippet"    : { "text": snippetText }
+                            }
+                        }
+                    }
+                ],
+                "properties": {
+                    "findingId"        : f.findingId,
+                    "engineId"         : f.engineId,
+                    "language"         : f.language,
+                    "validationStatus" : f.validationStatus,
+                    "confidence"       : f.confidence,
+                    "confidenceLevel"  : f.confidenceLevel,
+                    "hypothesesCount"  : arrayLen( f.hypotheses ),
+                    "testsCount"       : arrayLen( f.testsExecuted )
+                }
+            };
+
+            arrayAppend( results, sarifRes );
+        }
+
+        var run = {
+            "tool": {
+                "driver": {
+                    "name"          : "FaultGraph-BX Synergy Engine",
+                    "version"       : arguments.toolVersion,
+                    "informationUri": "https://github.com/ortus-solutions/faultgraph-bx",
+                    "rules"         : driverRules
+                }
+            },
+            "results": results
+        };
+
+        arrayAppend( sarif.runs, run );
+        return sarif;
+    }
+
+    private string function mapSeverityToSarifLevel( required string severity ) {
+        var s = uCase( arguments.severity );
+        if ( s == "CRITICAL" || s == "HIGH" ) { return "error"; }
+        if ( s == "MEDIUM" ) { return "warning"; }
+        return "note";
+    }
+
+    public struct function toSarif( required array findings, string toolVersion = "1.0.0" ) {
+        return exportToSarif( arguments.findings, arguments.toolVersion );
+    }
+
+}

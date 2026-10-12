@@ -1,0 +1,259 @@
+/**
+ * Config - configuracion central de FaultGraph-BX.
+ *
+ * Variables de entorno soportadas:
+ *   ANTHROPIC_API_KEY          clave del LLM (si falta, el sistema usa solo el motor heuristico)
+ *   FAULTGRAPH_LLM_ENDPOINT    endpoint compatible con la API Messages de Anthropic
+ *   FAULTGRAPH_LLM_MODEL       modelo a utilizar (por defecto claude-sonnet-5-5)
+ *   FAULTGRAPH_OFFLINE=1       fuerza modo sin LLM
+ *   FAULTGRAPH_PROMOTE=1       si el parche se verifica, sobrescribe PaymentService.bx (deja .bak)
+ *   FAULTGRAPH_NO_COLOR=1      desactiva colores ANSI en la consola
+ */
+class {
+
+    public any function init( required string rootDir ) {
+        variables.rootDir = arguments.rootDir;
+        if ( right( variables.rootDir, 1 ) != "/" && right( variables.rootDir, 1 ) != char( 92 ) ) {
+            variables.rootDir = variables.rootDir & "/";
+        }
+
+        variables.appName = "FaultGraph-BX";
+        variables.version = "1.0.0";
+
+        variables.llm = {
+            "endpoint"       : readEnv( "FAULTGRAPH_LLM_ENDPOINT", "https://api.anthropic.com/v1/messages" ),
+            "model"          : readEnv( "FAULTGRAPH_LLM_MODEL", "claude-sonnet-5-5" ),
+            "apiKey"         : readEnv( "ANTHROPIC_API_KEY", "" ),
+            "apiVersion"     : "2023-06-01",
+            "timeoutSeconds" : 25,
+            "maxTokens"      : 700
+        };
+
+        variables.localAi = {
+            "enabled"            : !isFlagSet( "FAULTGRAPH_OFFLINE" ) && !isFlagSet( "FAULTGRAPH_DISABLE_LOCAL_AI" ),
+            "endpoint"           : readEnv( "FAULTGRAPH_OLLAMA_ENDPOINT", "http://127.0.0.1:11434/api/generate" ),
+            "model"              : readEnv( "FAULTGRAPH_OLLAMA_MODEL", "qwen2.5-coder:7b" ),
+            "deepReasoningModel" : readEnv( "FAULTGRAPH_DEEP_REASONING_MODEL", "deepseek-r1:7b" ),
+            "lightweightModel"   : readEnv( "FAULTGRAPH_LIGHTWEIGHT_MODEL", "qwen2.5-coder:3b" ),
+            "activeProfile"      : readEnv( "FAULTGRAPH_AI_PROFILE", "standard" ), // standard (7b), deep_investigation (deepseek-r1:7b), lightweight (3b)
+            "timeoutSeconds"     : val( readEnv( "FAULTGRAPH_LOCAL_AI_TIMEOUT", "15" ) ),
+            "maxTokens"          : val( readEnv( "FAULTGRAPH_LOCAL_AI_MAX_TOKENS", "700" ) ),
+            "maxTokensCeiling"   : val( readEnv( "FAULTGRAPH_LOCAL_AI_MAX_TOKENS_CEILING", "2048" ) ),
+            "temperature"        : 0.1
+        };
+
+        variables.webResearch = {
+            "enabled"        : !isFlagSet( "FAULTGRAPH_OFFLINE" ) && !isFlagSet( "FAULTGRAPH_DISABLE_WEB_RESEARCH" ),
+            "maxBytes"       : val( readEnv( "FAULTGRAPH_WEB_MAX_BYTES", "262144" ) ),
+            "connectTimeout" : val( readEnv( "FAULTGRAPH_WEB_CONNECT_TIMEOUT", "5" ) ),
+            "readTimeout"    : val( readEnv( "FAULTGRAPH_WEB_READ_TIMEOUT", "8" ) )
+        };
+
+        variables.dashboard = {
+            "port"   : val( readEnv( "FAULTGRAPH_DASHBOARD_PORT", "8095" ) ),
+            "apiKey" : readEnv( "FAULTGRAPH_DASHBOARD_API_KEY", "" )
+        };
+
+        variables.knowledgeBasePath = variables.rootDir & "config/knowledge_base.json";
+
+        return this;
+    }
+
+    public string function getDashboardApiKey() { return variables.dashboard.apiKey; }
+
+    public string function getAppName() { return variables.appName; }
+
+    public string function getVersion() { return variables.version; }
+
+    public string function getRootDir() { return variables.rootDir; }
+
+    public string function getTargetSourcePath() {
+        var envTarget = readEnv( "FAULTGRAPH_TARGET_SOURCE", "" );
+        if ( len( trim( envTarget ) ) ) {
+            return trim( envTarget );
+        }
+        return variables.rootDir & "target_app/PaymentService.bx";
+    }
+
+    public string function getPatchedSourcePath() {
+        var envPatched = readEnv( "FAULTGRAPH_PATCHED_SOURCE", "" );
+        if ( len( trim( envPatched ) ) ) {
+            return trim( envPatched );
+        }
+        return variables.rootDir & "target_app/PaymentServicePatched.bx";
+    }
+
+    public string function getReportsDir() {
+        return variables.rootDir & "reports/";
+    }
+
+    public struct function getLlm() {
+        return variables.llm;
+    }
+
+    public boolean function isLlmEnabled() {
+        return len( variables.llm.apiKey ) > 0 && !isFlagSet( "FAULTGRAPH_OFFLINE" );
+    }
+
+    public struct function getLocalAi() {
+        return variables.localAi;
+    }
+
+    public string function getActiveAiModel( string profileOverride = "" ) {
+        var profile = len( trim( arguments.profileOverride ) ) ? trim( arguments.profileOverride ) : variables.localAi.activeProfile;
+        switch ( profile ) {
+            case "deep_investigation":
+            case "deepseek":
+                return variables.localAi.deepReasoningModel;
+            case "lightweight":
+            case "edge":
+                return variables.localAi.lightweightModel;
+            case "standard":
+            default:
+                return variables.localAi.model;
+        }
+    }
+
+    public string function getDeepReasoningModel() {
+        return variables.localAi.deepReasoningModel;
+    }
+
+    public string function getLightweightModel() {
+        return variables.localAi.lightweightModel;
+    }
+
+    public void function setAiProfile( required string profile ) {
+        variables.localAi.activeProfile = arguments.profile;
+    }
+
+    public struct function getWebResearchConfig() {
+        return variables.webResearch;
+    }
+
+    public boolean function isWebResearchEnabled() {
+        return variables.webResearch.enabled;
+    }
+
+    public string function getKnowledgeBasePath() {
+        return variables.knowledgeBasePath;
+    }
+
+    /**
+     * Calcula de forma dinamica y adaptativa el presupuesto de tokens para IA local,
+     * mitigando tanto la asfixia del contexto como el riesgo de latencia desmedida.
+     */
+    public numeric function calculateDynamicTokenBudget( required string taskType, numeric inputSize = 0 ) {
+        var ceiling = val( variables.localAi.maxTokensCeiling );
+        if ( ceiling <= 0 ) {
+            ceiling = 2048;
+        }
+        var budget = variables.localAi.maxTokens;
+
+        switch ( arguments.taskType ) {
+            case "anomaly_detection":
+                // Tareas binarias o enums de telemetria
+                budget = 300;
+                break;
+            case "challenge_diagnosis":
+                // Argumentacion critica y evaluacion de riesgos residuales
+                budget = 700;
+                break;
+            case "evidence_correlation":
+                // Correlacion multi-escenario: proporcional al numero de fallos
+                budget = min( ceiling, max( 500, arguments.inputSize * 150 ) );
+                break;
+            case "code_audit":
+                // Auditoria semantica de codigo: escala con las lineas del fragmento
+                budget = min( ceiling, max( 600, round( arguments.inputSize * 25 ) ) );
+                break;
+            default:
+                budget = variables.localAi.maxTokens;
+        }
+
+        return javacast( "int", min( budget, ceiling ) );
+    }
+
+    /**
+     * Calcula el timeout proporcional al presupuesto de tokens asignado,
+     * evitando desconexiones HTTP prematuras en generaciones amplias.
+     */
+    public numeric function calculateDynamicTimeout( numeric tokenBudget = 0 ) {
+        var baseTimeout = val( variables.localAi.timeoutSeconds );
+        if ( baseTimeout <= 0 ) {
+            baseTimeout = 10;
+        }
+        if ( arguments.tokenBudget <= 0 ) {
+            return baseTimeout;
+        }
+        var adaptiveSec = baseTimeout + round( ( arguments.tokenBudget / 100 ) * 1.5 );
+        return javacast( "int", min( 45, max( baseTimeout, adaptiveSec ) ) );
+    }
+
+    public boolean function isLocalAiEnabled() {
+        return variables.localAi.enabled && !isFlagSet( "FAULTGRAPH_OFFLINE" ) && isLocalAiAvailable();
+    }
+
+    public boolean function isLocalAiAvailable() {
+        if ( isFlagSet( "FAULTGRAPH_OFFLINE" ) || isFlagSet( "FAULTGRAPH_DISABLE_LOCAL_AI" ) ) {
+            return false;
+        }
+        try {
+            var javaSocket  = createObject( "java", "java.net.Socket" );
+            var javaAddress = createObject( "java", "java.net.InetSocketAddress" ).init( "127.0.0.1", 11434 );
+            javaSocket.connect( javaAddress, 400 );
+            javaSocket.close();
+            return true;
+        } catch ( any e ) {
+            return false;
+        }
+    }
+
+    public boolean function shouldPromote() {
+        return isFlagSet( "FAULTGRAPH_PROMOTE" );
+    }
+
+    public boolean function useColor() {
+        return !isFlagSet( "FAULTGRAPH_NO_COLOR" ) && !isFlagSet( "NO_COLOR" );
+    }
+
+    /**
+     * Configuracion del servicio objetivo tal como llegaria de un archivo de entorno.
+     * Se devuelve una estructura NUEVA en cada llamada para que el ChaosEngine pueda mutarla sin efectos laterales.
+     *
+     * Atencion: "surchargePct" esta escrito como texto con simbolo de porcentaje.
+     * Ese valor solo se usa en el camino de fallback, por eso nadie lo ha visto fallar todavia.
+     */
+    public struct function getTargetServiceConfig() {
+        return {
+            "merchantId" : "MRC-SV-0042",
+            "currency"   : "USD",
+            "gateway"    : {
+                "url"       : "https://gateway.example.test/v2/charge",
+                "timeoutMs" : 3000,
+                "retries"   : 2
+            },
+            "fallback"   : {
+                "queueName"    : "payments-offline",
+                "surchargePct" : "2.5%",
+                "maxQueueSize" : 500
+            }
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Utilidades privadas
+    // ------------------------------------------------------------------
+
+    private string function readEnv( required string name, string defaultValue = "" ) {
+        var sysEnv = createObject( "java", "java.lang.System" ).getenv();
+        if ( sysEnv.containsKey( arguments.name ) ) {
+            return sysEnv.get( arguments.name );
+        }
+        return arguments.defaultValue;
+    }
+
+    private boolean function isFlagSet( required string name ) {
+        return listFindNoCase( "1,true,yes", readEnv( arguments.name, "" ) ) > 0;
+    }
+
+}

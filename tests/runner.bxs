@@ -1,0 +1,143 @@
+/**
+ * FaultGraph-BX - Runner principal del Banco de Pruebas (Fase B).
+ *
+ *   boxlang tests/runner.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+// Subir un nivel para obtener la raiz del proyecto
+rootDir = replace( rootDir, "tests\", "" );
+rootDir = replace( rootDir, "tests/", "" );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+assert   = new tests.harness.Assert();
+reporter = new tests.harness.TestReporter( "Banco de Pruebas FaultGraph-BX (Fase B)" );
+
+println( "============================================================" );
+println( "    FAULTGRAPH-BX :: BANCO DE PRUEBAS AUTOMATIZADO (FASE B) " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+// 1. Suite B1: Ejecucion, imports y serializacion
+new tests.suites.ExecutionAndSerializationTest( rootDir, reporter, assert ).run();
+
+// 2. Suite B2: Evidencias duplicadas, contradictorias, ausentes y fuera de orden
+new tests.suites.EvidenceRobustnessTest( rootDir, reporter, assert ).run();
+
+// 3. Suite B3: Relaciones del grafo y representacion de dependencias
+new tests.suites.FaultGraphStructureTest( rootDir, reporter, assert ).run();
+
+// 4. Suite B4: Diagnosticos con causas raiz conocidas, hipotesis y evidencia insuficiente
+new tests.suites.HypothesisEngineTest( rootDir, reporter, assert ).run();
+
+// 5. Suite B5: Coordinacion y resolucion de estados del Director
+new tests.suites.AgentCoordinationTest( rootDir, reporter, assert ).run();
+
+// 6. Suite B6: Herramientas, permisos, timeouts e instrucciones maliciosas
+new tests.suites.ToolsAndSecurityTest( rootDir, reporter, assert ).run();
+
+// 7. Suite B7: Persistencia, recuperacion e integridad de reportes
+new tests.suites.PersistenceRecoveryTest( rootDir, reporter, assert ).run();
+
+// 8. Suite B8: Rendimiento y consumo de recursos
+new tests.suites.PerformanceResourceTest( rootDir, reporter, assert ).run();
+
+// 9. Suite D: Integracion de BoxLang AI (MockService y Resiliencia)
+new tests.integration.BoxLangAiIntegrationTest( rootDir, reporter, assert ).run();
+
+// 10. Suite S1: IA Local de Seguridad, Aislamiento, Privilegios Minimos y Validador Independiente
+new tests.suites.LocalSecurityAiTest( rootDir, reporter, assert ).run();
+
+// 11. Suite R1: Escaner de Repositorios e Ingesta de Logs
+new tests.suites.RepositoryScannerTest( rootDir, reporter, assert ).run();
+
+// 12. Suite B10: Optimizaciones Avanzadas de BoxLang (Concurrencia, SemanticCache, EventBus)
+new tests.suites.AdvancedBoxLangOptimizationTest( rootDir, reporter, assert ).run();
+
+// 13. Suite AS1: Generador de Pruebas de Regresion y Centinela en Tiempo Real
+new tests.suites.AutoTestAndSentinelTest( rootDir, reporter, assert ).run();
+
+// 14. Suite B11: Base de Conocimiento Estructurada, Indexada y Verificable
+new tests.suites.KnowledgeBaseTest( rootDir, reporter, assert ).run();
+
+// 15. Suite B12: Capa de Investigacion Web Filtrada, SSRF Protection y Allowlist
+new tests.suites.WebResearchLayerTest( rootDir, reporter, assert ).run();
+
+// 16. Suite B13: Flota de Especialistas de IA Local Bajo Demanda
+new tests.suites.SpecializedAIEngineTest( rootDir, reporter, assert ).run();
+
+// 17. Suite B14: Motor Formal de Diagnostico y Verificacion en 9 Pasos
+new tests.suites.DiagnosticVerificationEngineTest( rootDir, reporter, assert ).run();
+
+// 18. Suite B15: Exportador OASIS SARIF v2.1.0 y CI/CD Quality Gate
+new tests.suites.SarifExporterTest( rootDir, reporter, assert ).run();
+
+// 19. Suite B16: Busqueda Semantica Vectorial Hibrida (RRF) en KnowledgeBase
+new tests.suites.HybridVectorSearchTest( rootDir, reporter, assert ).run();
+
+// 20. Suite B17: Motor de Ejecucion Sombra (Shadow Testing) y Deteccion de Regresiones
+new tests.suites.ShadowTesterTest( rootDir, reporter, assert ).run();
+
+// 21. Suite B18: Servidor HTTP y Dashboard Web Embebido
+new tests.suites.WebDashboardTest( rootDir, reporter, assert ).run();
+
+// 22. Suite E1: Validacion en Repositorio Real Externo (BoxLang AI Module)
+new tests.suites.ExternalRepositoryValidationTest( rootDir, reporter, assert ).run();
+
+// 23. Suite ADV1: Campana de Pruebas Adversarias y Endurecimiento Continuo
+new tests.suites.AdversarialStressCampaignTest( rootDir, reporter, assert ).run();
+
+// 24. Suite B19: Banco de Pruebas de Capacidades Open-Source, Precision, Recall y SARIF
+new tests.suites.OpenSourceCapabilityBenchmarkTest( rootDir, reporter, assert ).run();
+
+// 25. Suite B20: Sistema Adaptativo de Inteligencia Multilenguaje y Orquestacion con BoxLang
+new tests.suites.MultiLanguageIntelligenceTest( rootDir, reporter, assert ).run();
+
+// 26. Suite B21: Sinergia Inteligente, Grafo de Evidencias y Emulacion de Adversarios Defensiva
+new tests.suites.SynergyAndAdversaryEmulationTest( rootDir, reporter, assert ).run();
+
+// 27. Suite B22: Inteligencia Estructural, Grafo de Conocimiento y Razonamiento Verificable (Graphify, KGW 2.5-3B, Causal, 4 Paradigmas)
+new tests.suites.FaultGraphIntelligenceTest( rootDir, reporter, assert ).run();
+
+// 28. Suite B23: Integracion de Flujos Principales, Especializacion Poliglota, Arbitraje AST y Emulacion Adversaria
+new tests.suites.SynergyPolyglotAndFlowIntegrationTest( rootDir, reporter, assert ).run();
+
+// 29. Suite B24: Resiliencia Avanzada (CircuitBreaker), Webhooks ChatOps y Memoria Federada (Vaccine Packs)
+new tests.suites.ResilienceAndAlertingTest( rootDir, reporter, assert ).run();
+
+// 30. Suite B25: Navegacion Topologica, Zonificacion Semantica y Herramientas de Grafo para IA Local
+new tests.suites.GraphNavigatorAndAgenticToolsTest( rootDir, reporter, assert ).run();
+
+// 31. Suite B26: Endurecimiento Arquitectonico, Desacoplamiento y Concurrencia
+new tests.suites.ArchitectureHardeningTest( rootDir, reporter, assert ).run();
+
+// 32. Suite B27: Integracion con el Ecosistema Ortus (ColdBox Interceptor, AstTransformer y CommandBox CLI)
+new tests.suites.EcosystemAndInterceptionTest( rootDir, reporter, assert ).run();
+
+// 33. Suite B28: Despliegue Canary, Auto-Rollback Atomico y Generador SRE Post-Mortem
+new tests.suites.CanaryAndPostMortemTest( rootDir, reporter, assert ).run();
+
+// Salida en consola
+reporter.printConsole();
+
+summary = reporter.getSummary();
+// Guardar resultado JSON en reports/
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "test-results-suite.json";
+fileWrite( outputPath, jsonSerialize( summary ) );
+println( "Reporte de pruebas guardado en: " & outputPath );
+println( "============================================================" );
+
+if ( summary.failed > 0 ) {
+    println( "RESULTADO: FALLARON " & summary.failed & " PRUEBAS." );
+} else {
+    println( "RESULTADO: TODAS LAS PRUEBAS (" & summary.total & ") PASARON EXITOSAMENTE." );
+}
+println( "============================================================" );

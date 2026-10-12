@@ -1,0 +1,11 @@
+/**
+ * Known Defect: Empty catch block swallowing exceptions (CWE-391)
+ */
+class {
+    function process() {
+        try {
+            doRiskyWork();
+        } catch ( any e ) {
+        }
+    }
+}

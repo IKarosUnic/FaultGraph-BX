@@ -1,0 +1,218 @@
+/**
+ * FaultGraphInterceptor - Interceptor nativo para ColdBox Web Framework y observador de excepciones BoxLang.
+ *
+ * Mision:
+ *   Captura excepciones no controladas en tiempo de ejecucion en aplicaciones web ColdBox
+ *   (evento onException) o aplicaciones standalone de BoxLang, extrayendo contexto de la peticion,
+ *   trazas de pila, lineas causales y sanitizando parametros sensibles.
+ *
+ *   Integra automaticamente los incidentes en el grafo de evidencias compartidas (SharedEvidenceGraph),
+ *   emite eventos en EventBus y permite generar analisis de causa raiz y diagramas Mermaid en tiempo real.
+ */
+class {
+
+    public any function init( any config = {} ) {
+        variables.config        = isObject( arguments.config ) ? arguments.config : new config.Config();
+        variables.incidents     = [];
+        variables.maxIncidents  = 100;
+        variables.autoDiagnose  = true;
+        variables.ingestor      = new models.LogDiagnosticIngestor( variables.config );
+        variables.lockName      = "FaultGraphInterceptor_Lock_" & hash( getCurrentTemplatePath() );
+
+        // Palabras clave sensibles para sanitizacion de parametros en peticiones web
+        variables.sensitiveKeys = [
+            "password", "passwd", "pwd", "secret", "token", "apikey",
+            "api_key", "auth", "authorization", "creditcard", "cvv", "card_number"
+        ];
+
+        return this;
+    }
+
+    /**
+     * Configuracion declarativa para cuando se instancia dentro del ciclo de vida de ColdBox
+     */
+    public void function configure() {
+        // Inicializacion de propiedades del interceptor si ColdBox inyecta variables.properties
+        if ( structKeyExists( variables, "properties" ) && isStruct( variables.properties ) ) {
+            if ( structKeyExists( variables.properties, "maxIncidents" ) ) {
+                variables.maxIncidents = val( variables.properties.maxIncidents );
+            }
+            if ( structKeyExists( variables.properties, "autoDiagnose" ) ) {
+                variables.autoDiagnose = variables.properties.autoDiagnose;
+            }
+        }
+    }
+
+    /**
+     * Interceptor principal de excepciones en ColdBox.
+     * Captura el evento onException cuando ocurre un HTTP 500 o fallo no controlado.
+     *
+     * @event          Objeto RequestContext de ColdBox (o struct simulado)
+     * @rc             Request Collection
+     * @prc            Private Request Collection
+     * @faultException Estructura o Java Exception capturada
+     */
+    public struct function onException( any event = {}, struct rc = {}, struct prc = {}, any faultException = {} ) {
+        var incident = buildIncidentRecord( arguments.faultException, arguments.rc, arguments.prc, arguments.event );
+
+        // Almacenar en memoria de forma acotada (FIFO)
+        lock name=variables.lockName timeout=5 type="exclusive" {
+            arrayAppend( variables.incidents, incident );
+            if ( arrayLen( variables.incidents ) > variables.maxIncidents ) {
+                arrayDeleteAt( variables.incidents, 1 );
+            }
+        }
+
+        // Ejecutar autodiagnostico si esta activo
+        if ( variables.autoDiagnose ) {
+            try {
+                var stackStr = incident.exception.stackTrace;
+                var diagRes = variables.ingestor.ingestAndDiagnoseText( stackStr, "ColdBoxException" );
+                incident[ "diagnostic" ] = diagRes.diagnosis;
+                incident[ "mermaid" ]    = diagRes.mermaidGraph;
+            } catch ( any e ) {
+                incident[ "diagnostic" ] = { "ok": false, "error": e.message };
+                incident[ "mermaid" ]    = "flowchart LR" & char( 10 ) & "  ERR[Error Diagnosticando]";
+            }
+        }
+
+        return incident;
+    }
+
+    /**
+     * Metodo universal de captura para aplicaciones standalone de BoxLang.
+     *
+     * @faultException Excepcion o struct de error
+     * @context        Contexto arbitrario (parametros, usuario, modulo)
+     */
+    public struct function captureException( any faultException, struct context = {} ) {
+        return onException( {}, arguments.context, {}, arguments.faultException );
+    }
+
+    /**
+     * Construye un registro estandarizado de incidente a partir de la excepcion y el contexto.
+     */
+    private struct function buildIncidentRecord( any exc, struct rc, struct prc, any event ) {
+        var id = "INC-" & dateTimeFormat( now(), "yyyyMMdd-HHmmss" ) & "-" & right( hash( createUUID() ), 6 );
+        var excStruct = extractExceptionDetails( arguments.exc );
+        var sanitizedRc = sanitizeParams( arguments.rc );
+        var route = "";
+
+        if ( isObject( arguments.event ) ) {
+            try {
+                route = arguments.event.getCurrentRoute();
+            } catch ( any e ) {
+                route = "";
+            }
+        } else if ( isStruct( arguments.event ) && structKeyExists( arguments.event, "route" ) ) {
+            route = arguments.event.route;
+        }
+
+        return {
+            "id"          : id,
+            "timestamp"   : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "route"       : route,
+            "exception"   : excStruct,
+            "context"     : sanitizedRc,
+            "resolved"    : false,
+            "severity"    : determineSeverity( excStruct )
+        };
+    }
+
+    /**
+     * Extrae detalles normalizados de cualquier excepcion (BoxLang struct, Java Throwable o string).
+     */
+    private struct function extractExceptionDetails( any exc ) {
+        if ( isStruct( arguments.exc ) ) {
+            return {
+                "message"    : structKeyExists( arguments.exc, "message" ) ? arguments.exc.message : "Error desconocido",
+                "detail"     : structKeyExists( arguments.exc, "detail" ) ? arguments.exc.detail : "",
+                "type"       : structKeyExists( arguments.exc, "type" ) ? arguments.exc.type : "Application",
+                "stackTrace" : structKeyExists( arguments.exc, "stackTrace" ) ? arguments.exc.stackTrace : ( structKeyExists( arguments.exc, "stacktrace" ) ? arguments.exc.stacktrace : "" ),
+                "tagContext" : structKeyExists( arguments.exc, "tagContext" ) ? arguments.exc.tagContext : []
+            };
+        } else if ( isObject( arguments.exc ) ) {
+            var msg = "";
+            var st  = "";
+            try { msg = arguments.exc.getMessage(); } catch ( any e ) { msg = toString( arguments.exc ); }
+            try {
+                var sw = createObject( "java", "java.io.StringWriter" ).init();
+                var pw = createObject( "java", "java.io.PrintWriter" ).init( sw );
+                arguments.exc.printStackTrace( pw );
+                st = sw.toString();
+            } catch ( any e ) {
+                st = "";
+            }
+            return {
+                "message"    : msg,
+                "detail"     : "",
+                "type"       : arguments.exc.getClass().getName(),
+                "stackTrace" : st,
+                "tagContext" : []
+            };
+        }
+
+        return {
+            "message"    : toString( arguments.exc ),
+            "detail"     : "",
+            "type"       : "StringException",
+            "stackTrace" : toString( arguments.exc ),
+            "tagContext" : []
+        };
+    }
+
+    /**
+     * Sanitiza parametros confidenciales sustituyendo sus valores por [REDACTED].
+     */
+    public struct function sanitizeParams( struct params = {} ) {
+        var clean = {};
+        for ( var k in arguments.params ) {
+            var lk = lcase( trim( k ) );
+            var isSensitive = false;
+            for ( var sens in variables.sensitiveKeys ) {
+                if ( findNoCase( sens, lk ) > 0 ) {
+                    isSensitive = true;
+                    break;
+                }
+            }
+            if ( isSensitive ) {
+                clean[ k ] = "[REDACTED]";
+            } else if ( isStruct( arguments.params[ k ] ) ) {
+                clean[ k ] = sanitizeParams( arguments.params[ k ] );
+            } else {
+                clean[ k ] = arguments.params[ k ];
+            }
+        }
+        return clean;
+    }
+
+    private string function determineSeverity( struct exc ) {
+        var txt = lcase( exc.message & " " & exc.detail & " " & exc.type );
+        if ( find( "nullpointer", txt ) || find( "out of memory", txt ) || find( "deadlock", txt ) || find( "security", txt ) ) {
+            return "CRITICAL";
+        }
+        if ( find( "timeout", txt ) || find( "database", txt ) || find( "sql", txt ) || find( "connection", txt ) ) {
+            return "HIGH";
+        }
+        return "MEDIUM";
+    }
+
+    public array function getIncidents() {
+        lock name=variables.lockName timeout=3 type="readonly" {
+            return duplicate( variables.incidents );
+        }
+    }
+
+    public numeric function getIncidentCount() {
+        lock name=variables.lockName timeout=3 type="readonly" {
+            return arrayLen( variables.incidents );
+        }
+    }
+
+    public void function clearIncidents() {
+        lock name=variables.lockName timeout=5 type="exclusive" {
+            variables.incidents = [];
+        }
+    }
+
+}

@@ -1,0 +1,137 @@
+/**
+ * AgentCoordinationTest - Suite B5: Coordinacion y resolucion de estados del Director.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testHealthyServiceCoordination();
+        testVerificationFailureCoordination();
+        testMissingSourceFileCoordination();
+    }
+
+    private void function testHealthyServiceCoordination() {
+        var id = "TC-B5-01";
+        var scenario = "Coordinacion cuando el servicio objetivo ya es sano (0 fallos de caos)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            // Chaos engine que siempre sobrevive
+            var healthyChaos = {
+                "runScenario": function( sc ) {
+                    return { "survived": true, "status": "APPROVED", "channel": "GATEWAY", "errorMessage": "", "errorType": "", "errorDetail": "", "errorLine": "", "errorTemplate": "" };
+                },
+                "runAll": function() {
+                    return { "label": "HealthyChaos", "total": 8, "survived": 8, "failed": 0, "durationMs": 10, "results": [] };
+                },
+                "getScenario": function( id ) {
+                    return { "id": id, "title": "Mock Healthy", "gatewayMode": "healthy", "configMutation": "none", "amount": 100, "faultHint": "NONE" };
+                },
+                "getScenarios": function() {
+                    return [ { "id": "S00" } ];
+                }
+            };
+
+            var director = new agents.IncidentDirector( cfg, healer, healthyChaos, function() { return healthyChaos; } );
+            var summary = director.run();
+
+            variables.assert.isTrue( summary.verified );
+            variables.assert.isEqual( 0, summary.before.failed );
+            variables.assert.isEqual( "", summary.patchedPath );
+
+            variables.reporter.record( id, scenario, "Servicio con 0 fallos", "verified=true inmediato sin generar parche", "verified=" & summary.verified & ", patchedPath=''", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Servicio sano", "verified=true", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testVerificationFailureCoordination() {
+        var id = "TC-B5-02";
+        var scenario = "Coordinacion cuando la verificacion del parche falla (persisten errores)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var failingInitialChaos = {
+                "runScenario": function( sc ) {
+                    return { "survived": false, "status": "", "channel": "", "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx" };
+                },
+                "runAll": function() {
+                    return {
+                        "label": "FailingInitial", "total": 1, "survived": 0, "failed": 1, "durationMs": 10,
+                        "results": [
+                            { "id": "S01", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" }
+                        ]
+                    };
+                },
+                "getScenario": function( id ) {
+                    return { "id": id, "title": "S01", "gatewayMode": "timeout", "configMutation": "none", "amount": 100, "faultHint": "NUMERIC_CONTENT" };
+                },
+                "getScenarios": function() { return [ { "id": "S01" } ]; }
+            };
+
+            // Motor de verificacion que tambien falla
+            var verifyFailingChaos = function() {
+                return {
+                    "runAll": function() {
+                        return {
+                            "label": "VerifyStillFailing", "total": 1, "survived": 0, "failed": 1, "durationMs": 5,
+                            "results": [
+                                { "id": "S01", "survived": false, "errorType": "PersistingError", "errorMessage": "Aun falla", "errorDetail": "", "errorLine": 1, "errorTemplate": "" }
+                            ]
+                        };
+                    }
+                };
+            };
+
+            var director = new agents.IncidentDirector( cfg, healer, failingInitialChaos, verifyFailingChaos );
+            var summary = director.run();
+
+            variables.assert.isFalse( summary.verified );
+            variables.assert.isFalse( summary.promoted );
+
+            variables.reporter.record( id, scenario, "Parche no resuelve todos los escenarios", "verified=false, promoted=false", "verified=" & summary.verified & ", promoted=" & summary.promoted, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Verificacion fallida", "verified=false", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMissingSourceFileCoordination() {
+        var id = "TC-B5-03";
+        var scenario = "Coordinacion cuando el archivo fuente objetivo no existe";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            // Crear config que apunte a un archivo inexistente
+            var mockCfg = {
+                "useColor": function() { return false; },
+                "getTargetSourcePath": function() { return "c:/archivo_inexistente_12345.bx"; },
+                "getAppName": function() { return "Test"; },
+                "getVersion": function() { return "1.0"; },
+                "isLlmEnabled": function() { return false; }
+            };
+            var healer = new models.Healer( cfg );
+            var dummyChaos = { "getScenarios": function() { return []; } };
+
+            var director = new agents.IncidentDirector( mockCfg, healer, dummyChaos, function() { return dummyChaos; } );
+            var summary = director.run();
+
+            variables.assert.isFalse( summary.verified );
+            variables.assert.isEqual( "", summary.patchedPath );
+
+            variables.reporter.record( id, scenario, "Archivo fuente inexistente", "Aborto limpio de Fase 1 con verified=false", "verified=" & summary.verified & ", aborto seguro", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Archivo inexistente", "Aborto limpio", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

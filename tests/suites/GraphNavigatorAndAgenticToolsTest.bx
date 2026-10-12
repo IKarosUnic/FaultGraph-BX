@@ -1,0 +1,174 @@
+/**
+ * GraphNavigatorAndAgenticToolsTest - Banco de pruebas para el motor de navegacion topologica,
+ * zonificacion semantica y herramientas interactivas de IA para el grafo.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testGraphZoningClassification();
+        testTopologicalPathfinding();
+        testBlastRadiusCalculation();
+        testUpstreamOriginTracing();
+        testAgenticGraphToolsExecution();
+    }
+
+    private any function buildSampleGraph() {
+        var g = new models.graph.StructuralKnowledgeGraph( variables.config );
+
+        // Zona 0: Punto de entrada
+        g.addNode( "EP:PaymentController", "PaymentController.chargeOrder", "ENDPOINT", "controllers/PaymentController.bx", 10, 25 );
+
+        // Zona 1: Dominio
+        g.addNode( "SVC:PaymentService", "PaymentService.process", "CLASS", "services/PaymentService.bx", 1, 80 );
+        g.addEdge( "EP:PaymentController", "SVC:PaymentService", "CALLS", "OBSERVED", 1.0 );
+
+        // Zona 2: Dependencia externa (SPOF)
+        g.addNode( "GW:StripeGateway", "StripeExternalGateway.invoke", "GATEWAY", "gateways/StripeGateway.bx", 1, 40 );
+        g.addEdge( "SVC:PaymentService", "GW:StripeGateway", "DEPENDS_ON", "OBSERVED", 1.0 );
+
+        // Zona 3: Fallback y contingencia
+        g.addNode( "FB:OfflineQueue", "OfflineQueue.enqueue", "FALLBACK", "services/OfflineQueue.bx", 1, 30 );
+        g.addEdge( "SVC:PaymentService", "FB:OfflineQueue", "FALLS_BACK_TO", "OBSERVED", 1.0 );
+
+        // Error dinámico conectado
+        g.addNode( "ERR:BoxCastException", "BoxCastException", "VULNERABILITY", "services/PaymentService.bx", 60, 60 );
+        g.addEdge( "FB:OfflineQueue", "ERR:BoxCastException", "TRIGGERED_BY", "DYNAMICALLY_VERIFIED", 1.0 );
+
+        return g;
+    }
+
+    private void function testGraphZoningClassification() {
+        var id = "TC-NAV-01";
+        var scenario = "GraphNavigator: clasificacion y zonificacion semantica en 4 capas (Entradas, Dominio, SPOFs, Fallbacks)";
+        var t0 = getTickCount();
+        try {
+            var g = buildSampleGraph();
+            var nav = new models.graph.GraphNavigator( g, variables.config );
+            var zSummary = nav.getZonesSummary();
+
+            variables.assert.isTrue( zSummary.ZONE_0_ENTRY >= 1, "Debe clasificar al menos 1 punto de entrada en Zona 0" );
+            variables.assert.isTrue( zSummary.ZONE_1_DOMAIN >= 1, "Debe clasificar al menos 1 componente de dominio en Zona 1" );
+            variables.assert.isTrue( zSummary.ZONE_2_SPOF_EXTERNAL >= 1, "Debe clasificar al menos 1 dependencia externa en Zona 2" );
+            variables.assert.isTrue( zSummary.ZONE_3_RESILIENCE >= 1, "Debe clasificar al menos 1 fallback en Zona 3" );
+
+            var entryNodes = nav.getNodesInZone( "ZONE_0_ENTRY" );
+            variables.assert.isTrue( arrayLen( entryNodes ) >= 1 );
+
+            variables.reporter.record( id, scenario, "Zonificacion Semantica", "Zonas 0, 1, 2 y 3 particionadas exitosamente", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Zonificacion Semantica", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testTopologicalPathfinding() {
+        var id = "TC-NAV-02";
+        var scenario = "GraphNavigator: pathfinding topologico (BFS) entre punto de entrada y fallo";
+        var t0 = getTickCount();
+        try {
+            var g = buildSampleGraph();
+            var nav = new models.graph.GraphNavigator( g, variables.config );
+
+            var pathRes = nav.findShortestPath( "EP:PaymentController", "ERR:BoxCastException" );
+
+            variables.assert.isTrue( pathRes.found, "Debe encontrar la ruta causal completa" );
+            variables.assert.isEqual( 3, pathRes.hops, "Debe recorrer exactamente 3 saltos entre entrada y error" );
+            variables.assert.isEqual( 4, arrayLen( pathRes.path ), "El camino debe contener 4 nodos ordenados" );
+            variables.assert.isEqual( "EP:PaymentController", pathRes.path[ 1 ] );
+            variables.assert.isEqual( "ERR:BoxCastException", pathRes.path[ 4 ] );
+
+            // Ruta inexistente
+            var noPath = nav.findShortestPath( "GW:StripeGateway", "EP:PaymentController" );
+            variables.assert.isFalse( noPath.found, "No debe encontrar camino en sentido contrario" );
+
+            variables.reporter.record( id, scenario, "Pathfinding Topologico BFS", "Camino exacto de 3 saltos descubierto", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Pathfinding BFS", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testBlastRadiusCalculation() {
+        var id = "TC-NAV-03";
+        var scenario = "GraphNavigator: calculo de radio de explosion (Blast Radius) aguas abajo";
+        var t0 = getTickCount();
+        try {
+            var g = buildSampleGraph();
+            var nav = new models.graph.GraphNavigator( g, variables.config );
+
+            var blast = nav.calculateBlastRadius( "SVC:PaymentService", 2 );
+
+            variables.assert.isEqual( "SVC:PaymentService", blast.rootNode );
+            variables.assert.isTrue( blast.totalAffected >= 3, "Debe identificar al menos 3 nodos afectados aguas abajo" );
+            variables.assert.isNotEqual( "LOW", blast.riskLevel, "Riesgo debe ser superior a LOW" );
+
+            variables.reporter.record( id, scenario, "Blast Radius", "Radio de impacto aguas abajo calculado", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Blast Radius", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testUpstreamOriginTracing() {
+        var id = "TC-NAV-04";
+        var scenario = "GraphNavigator: trazabilidad inversa (Upstream Origin Trace) hasta el punto de entrada";
+        var t0 = getTickCount();
+        try {
+            var g = buildSampleGraph();
+            var nav = new models.graph.GraphNavigator( g, variables.config );
+
+            var upTrace = nav.traceUpstreamOrigin( "ERR:BoxCastException" );
+
+            variables.assert.isEqual( "ERR:BoxCastException", upTrace.failureNode );
+            variables.assert.isTrue( upTrace.chainLength >= 3, "Cadena upstream debe contener al menos 3 nodos" );
+
+            variables.reporter.record( id, scenario, "Upstream Trace", "Origen de procedencia identificado", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Upstream Trace", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAgenticGraphToolsExecution() {
+        var id = "TC-NAV-05";
+        var scenario = "AgenticGraphTools: ejecucion de herramientas interactivas de navegacion para la IA local";
+        var t0 = getTickCount();
+        try {
+            var g = buildSampleGraph();
+            var nav = new models.graph.GraphNavigator( g, variables.config );
+            var tools = new models.graph.AgenticGraphTools( nav );
+
+            var manifest = tools.getToolManifest();
+            variables.assert.isEqual( 7, arrayLen( manifest ), "Debe exponer las 7 herramientas formales" );
+
+            // 1. inspect_node
+            var inspectRes = tools.executeTool( "inspect_node", { "nodeId": "SVC:PaymentService" } );
+            variables.assert.isTrue( inspectRes.ok );
+            variables.assert.isEqual( "PaymentService.process", inspectRes.result.label );
+
+            // 2. find_path
+            var pathRes = tools.executeTool( "find_path", { "sourceId": "EP:PaymentController", "targetId": "ERR:BoxCastException" } );
+            variables.assert.isTrue( pathRes.ok );
+            variables.assert.isTrue( pathRes.result.found );
+
+            // 3. check_blast_radius
+            var blastRes = tools.executeTool( "check_blast_radius", { "nodeId": "SVC:PaymentService", "maxHops": 2 } );
+            variables.assert.isTrue( blastRes.ok );
+            variables.assert.isTrue( blastRes.result.totalAffected >= 3 );
+
+            // 4. list_zone_nodes
+            var zoneRes = tools.executeTool( "list_zone_nodes", { "zone": "ZONE_2_SPOF_EXTERNAL" } );
+            variables.assert.isTrue( zoneRes.ok );
+            variables.assert.isTrue( zoneRes.count >= 1 );
+
+            variables.reporter.record( id, scenario, "Agentic Graph Tools", "Todas las herramientas ejecutadas correctamente", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Agentic Graph Tools", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

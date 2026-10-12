@@ -1,0 +1,11 @@
+/**
+ * Clean Example: Validated numeric arithmetic
+ */
+class {
+    function calculate( required any amount, required any rate ) {
+        if ( isNumeric( arguments.amount ) && isNumeric( arguments.rate ) ) {
+            return arguments.amount * arguments.rate;
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,135 @@
+/**
+ * EvidenceRobustnessTest - Suite B2: Evidencias duplicadas, contradictorias, ausentes y fuera de orden.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testDuplicateEvidence();
+        testContradictoryEvidence();
+        testMissingEvidence();
+        testOutOfOrderEvidence();
+    }
+
+    private void function testDuplicateEvidence() {
+        var id = "TC-B2-01";
+        var scenario = "Manejo de evidencias duplicadas (mismo fallo reportado dos veces)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var dupReport = {
+                "results": [
+                    { "id": "S01_GATEWAY_TIMEOUT", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" },
+                    { "id": "S01_GATEWAY_TIMEOUT", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" }
+                ]
+            };
+
+            var diag = healer.diagnose( dupReport );
+            variables.assert.isTrue( diag.hasFindings );
+            variables.assert.isEqual( 2, diag.totalFailures );
+            variables.assert.isEqual( 1, arrayLen( diag.causes ) );
+            // Verificamos si los escenarios duplicados se agregaron 2 veces en el bucket
+            var scenariosCount = arrayLen( diag.causes[ 1 ].scenarios );
+
+            // El sistema actual acumula duplicados en el array de escenarios
+            variables.reporter.record( id, scenario, "Reporte con 2 items identicos S01", "Causa unica TYPE_MISMATCH_NUMERIC generada (sin colapso silencioso)", "Causa detectada: " & diag.causes[ 1 ].code & ", entradas acumuladas=" & scenariosCount, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Reporte con duplicados", "Causa detectada", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testContradictoryEvidence() {
+        var id = "TC-B2-02";
+        var scenario = "Manejo de evidencias contradictorias (mismo ID marcado como survived=true y survived=false)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var mixedReport = {
+                "results": [
+                    { "id": "S01_GATEWAY_TIMEOUT", "survived": true, "status": "QUEUED_OFFLINE", "channel": "payments-offline", "errorType": "", "errorMessage": "", "errorDetail": "", "errorLine": "", "errorTemplate": "", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "" },
+                    { "id": "S01_GATEWAY_TIMEOUT", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" }
+                ]
+            };
+
+            var diag = healer.diagnose( mixedReport );
+            // El Healer ignora survived=true y solo clasifica survived=false
+            variables.assert.isEqual( 1, diag.totalFailures );
+            variables.assert.isEqual( "TYPE_MISMATCH_NUMERIC", diag.causes[ 1 ].code );
+
+            variables.reporter.record( id, scenario, "S01 con survived=true y luego survived=false", "Procesa el fallo sin error interno y sin falsas aserciones", "Fallo clasificado correctamente, ignorando el resultado exitoso", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Evidencias contradictorias", "Manejo limpio", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMissingEvidence() {
+        var id = "TC-B2-03";
+        var scenario = "Manejo de evidencia ausente (reporte vacio o campos de error nulos)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            // Caso 1: Reporte totalmente vacio
+            var emptyReport = { "results": [] };
+            var diagEmpty = healer.diagnose( emptyReport );
+            variables.assert.isFalse( diagEmpty.hasFindings );
+            variables.assert.isEqual( 0, diagEmpty.totalFailures );
+            variables.assert.isEqual( 0, arrayLen( diagEmpty.causes ) );
+
+            // Caso 2: Fallo con campos vacios
+            var sparseReport = {
+                "results": [
+                    { "id": "S99_UNKNOWN", "survived": false, "errorType": "", "errorMessage": "", "errorDetail": "", "errorLine": "", "errorTemplate": "", "gatewayMode": "unknown", "configMutation": "none", "faultHint": "" }
+                ]
+            };
+            var diagSparse = healer.diagnose( sparseReport );
+            variables.assert.isTrue( diagSparse.hasFindings );
+            variables.assert.isEqual( 1, arrayLen( diagSparse.causes ) );
+            variables.assert.isEqual( "INSUFFICIENT_DATA", diagSparse.causes[ 1 ].code );
+
+            variables.reporter.record( id, scenario, "Reporte vacio y reporte con fallo sin descripcion", "Vacio -> sin hallazgos; Sin descripcion -> INSUFFICIENT_DATA (abstencion)", "Vacio hasFindings=false, sparse cause=" & diagSparse.causes[ 1 ].code, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Evidencia ausente", "Manejo seguro", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testOutOfOrderEvidence() {
+        var id = "TC-B2-04";
+        var scenario = "Manejo de evidencias fuera de orden (secuencia invertida de escenarios)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var r1 = { "id": "S04_FALLBACK_CONFIG_MISSING", "survived": false, "errorType": "Application", "errorMessage": "The key [fallback] was not found in the struct", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "drop_fallback", "faultHint": "CONFIG_SHAPE" };
+            var r2 = { "id": "S01_GATEWAY_TIMEOUT", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "PaymentService.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" };
+
+            // Orden normal
+            var diagNormal = healer.diagnose( { "results": [ r1, r2 ] } );
+            // Orden invertido
+            var diagInverted = healer.diagnose( { "results": [ r2, r1 ] } );
+
+            // El Healer itera sobre [ "NULL_CONFIG_DEREF", "TYPE_MISMATCH_NUMERIC", "UNCLASSIFIED" ]
+            // por lo que el orden final de causas es determinista
+            variables.assert.isEqual( arrayLen( diagNormal.causes ), arrayLen( diagInverted.causes ) );
+            variables.assert.isEqual( diagNormal.causes[ 1 ].code, diagInverted.causes[ 1 ].code );
+            variables.assert.isEqual( diagNormal.causes[ 2 ].code, diagInverted.causes[ 2 ].code );
+
+            variables.reporter.record( id, scenario, "Entradas [r1, r2] vs [r2, r1]", "El orden final de causas se preserva de forma determinista", "Determinismo confirmado: " & diagInverted.causes[ 1 ].code & " y " & diagInverted.causes[ 2 ].code, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Orden invertido", "Determinismo", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

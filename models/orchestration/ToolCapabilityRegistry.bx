@@ -1,0 +1,275 @@
+/**
+ * ToolCapabilityRegistry - Registro adaptativo de capacidades de herramientas y seleccion por ecosistema.
+ *
+ * Mision:
+ *   1. Relaciona cada lenguaje y categoria de problema con herramientas apropiadas
+ *      (analizadores estaticos, compiladores, linters, pruebas, seguridad de dependencias).
+ *   2. Verifica disponibilidad del entorno de ejecucion sin instalar paquetes no solicitados.
+ *   3. Degrada con 0 coldstart al analizador determinista interno de BoxLang cuando una herramienta externa falta.
+ *   4. Clasifica fallos de herramientas en: DEFECTO_DEL_PROYECTO, ERROR_DE_CONFIGURACION o LIMITACION_DEL_ANALIZADOR.
+ *   5. Orquesta analisis multipaso y multilenguaje a traves de fronteras de modulos.
+ */
+class {
+
+    public any function init( any config = null ) {
+        variables.config = arguments.config;
+        variables.availabilityCache = {};
+        variables.toolsCatalog = getCatalogDefinition();
+        return this;
+    }
+
+    /**
+     * Catalogo maestro de capacidades por lenguaje y categoria de analisis.
+     */
+    public struct function getCatalogDefinition() {
+        return {
+            "BoxLang": {
+                "static_analysis"     : [ { "name": "BoxParser AST", "type": "INTERNAL", "command": "internal:boxparser" } ],
+                "linter"              : [ { "name": "BoxLang Deterministic Rules", "type": "INTERNAL", "command": "internal:rules" } ],
+                "compiler"            : [ { "name": "BoxLang Runtime", "type": "CLI", "binary": "boxlang", "checkArg": "--version" } ],
+                "tests"               : [ { "name": "TestBox / Runner", "type": "CLI", "binary": "boxlang", "checkArg": "tests/runner.bxs" } ],
+                "dependency_security" : [ { "name": "BoxLang Manifest Validator", "type": "INTERNAL", "command": "internal:boxjson" } ]
+            },
+            "Java": {
+                "static_analysis"     : [ { "name": "Native Java Analyzer", "type": "INTERNAL", "command": "internal:java" } ],
+                "compiler"            : [ { "name": "javac", "type": "CLI", "binary": "javac", "checkArg": "-version" } ],
+                "linter"              : [ { "name": "SpotBugs / Checkstyle", "type": "CLI", "binary": "checkstyle", "checkArg": "-version" } ],
+                "tests"               : [ { "name": "Maven Test", "type": "CLI", "binary": "mvn", "checkArg": "-v" }, { "name": "Gradle Test", "type": "CLI", "binary": "gradle", "checkArg": "-v" } ],
+                "dependency_security" : [ { "name": "OWASP Dependency-Check", "type": "CLI", "binary": "dependency-check", "checkArg": "--version" } ]
+            },
+            "Python": {
+                "static_analysis"     : [ { "name": "Native Python Analyzer", "type": "INTERNAL", "command": "internal:python" } ],
+                "compiler"            : [ { "name": "py_compile", "type": "CLI", "binary": "python", "checkArg": "-m py_compile --help" } ],
+                "linter"              : [ { "name": "ruff", "type": "CLI", "binary": "ruff", "checkArg": "--version" }, { "name": "flake8", "type": "CLI", "binary": "flake8", "checkArg": "--version" } ],
+                "tests"               : [ { "name": "pytest", "type": "CLI", "binary": "pytest", "checkArg": "--version" } ],
+                "dependency_security" : [ { "name": "pip-audit", "type": "CLI", "binary": "pip-audit", "checkArg": "--version" } ]
+            },
+            "JavaScript": {
+                "static_analysis"     : [ { "name": "Native JS Analyzer", "type": "INTERNAL", "command": "internal:js" } ],
+                "compiler"            : [ { "name": "Node.js syntax check", "type": "CLI", "binary": "node", "checkArg": "-v" } ],
+                "linter"              : [ { "name": "eslint", "type": "CLI", "binary": "eslint", "checkArg": "-v" } ],
+                "tests"               : [ { "name": "npm test", "type": "CLI", "binary": "npm", "checkArg": "-v" } ],
+                "dependency_security" : [ { "name": "npm audit", "type": "CLI", "binary": "npm", "checkArg": "-v" } ]
+            },
+            "TypeScript": {
+                "static_analysis"     : [ { "name": "Native TS Analyzer", "type": "INTERNAL", "command": "internal:ts" } ],
+                "compiler"            : [ { "name": "tsc --noEmit", "type": "CLI", "binary": "tsc", "checkArg": "-v" } ],
+                "linter"              : [ { "name": "eslint", "type": "CLI", "binary": "eslint", "checkArg": "-v" } ],
+                "tests"               : [ { "name": "npm test / vitest", "type": "CLI", "binary": "npm", "checkArg": "-v" } ],
+                "dependency_security" : [ { "name": "npm audit", "type": "CLI", "binary": "npm", "checkArg": "-v" } ]
+            },
+            "Cpp": {
+                "static_analysis"     : [ { "name": "Native C++ Analyzer", "type": "INTERNAL", "command": "internal:cpp" } ],
+                "compiler"            : [ { "name": "gcc / clang", "type": "CLI", "binary": "gcc", "checkArg": "--version" } ],
+                "linter"              : [ { "name": "cppcheck", "type": "CLI", "binary": "cppcheck", "checkArg": "--version" } ],
+                "tests"               : [ { "name": "ctest", "type": "CLI", "binary": "ctest", "checkArg": "--version" } ],
+                "dependency_security" : [ { "name": "cppcheck safety", "type": "INTERNAL", "command": "internal:cpp" } ]
+            },
+            "Go": {
+                "static_analysis"     : [ { "name": "Native Go Analyzer", "type": "INTERNAL", "command": "internal:go" } ],
+                "compiler"            : [ { "name": "go vet", "type": "CLI", "binary": "go", "checkArg": "version" } ],
+                "linter"              : [ { "name": "staticcheck", "type": "CLI", "binary": "staticcheck", "checkArg": "--version" } ],
+                "tests"               : [ { "name": "go test", "type": "CLI", "binary": "go", "checkArg": "version" } ],
+                "dependency_security" : [ { "name": "govulncheck", "type": "CLI", "binary": "govulncheck", "checkArg": "-version" } ]
+            },
+            "Rust": {
+                "static_analysis"     : [ { "name": "Native Rust Analyzer", "type": "INTERNAL", "command": "internal:rust" } ],
+                "compiler"            : [ { "name": "cargo check", "type": "CLI", "binary": "cargo", "checkArg": "--version" } ],
+                "linter"              : [ { "name": "cargo clippy", "type": "CLI", "binary": "cargo", "checkArg": "--version" } ],
+                "tests"               : [ { "name": "cargo test", "type": "CLI", "binary": "cargo", "checkArg": "--version" } ],
+                "dependency_security" : [ { "name": "cargo audit", "type": "CLI", "binary": "cargo", "checkArg": "--version" } ]
+            }
+        };
+    }
+
+    /**
+     * Selecciona la herramienta mas apropiada y disponible para un lenguaje y categoria.
+     */
+    public struct function selectTool( required string language, required string category ) {
+        var catalog = variables.toolsCatalog;
+        var langKey = arguments.language;
+        if ( langKey == "C" ) { langKey = "Cpp"; }
+        if ( langKey == "CFML" ) { langKey = "BoxLang"; }
+
+        if ( !structKeyExists( catalog, langKey ) || !structKeyExists( catalog[ langKey ], arguments.category ) ) {
+            return {
+                "selected"        : false,
+                "toolName"        : "None",
+                "type"            : "NONE",
+                "fallbackStrategy": "NATIVE_DETERMINISTIC",
+                "reason"          : "No hay herramientas catalogadas para " & arguments.language & " en categoria " & arguments.category
+            };
+        }
+
+        var candidates = catalog[ langKey ][ arguments.category ];
+        for ( var candidate in candidates ) {
+            if ( candidate.type == "INTERNAL" ) {
+                return {
+                    "selected"        : true,
+                    "toolName"        : candidate.name,
+                    "type"            : "INTERNAL",
+                    "command"         : candidate.command,
+                    "fallbackStrategy": "NONE",
+                    "isAvailable"     : true
+                };
+            }
+
+            var avail = checkAvailability( candidate.binary );
+            if ( avail.isAvailable ) {
+                return {
+                    "selected"        : true,
+                    "toolName"        : candidate.name,
+                    "type"            : "CLI",
+                    "binary"          : candidate.binary,
+                    "binaryPath"      : avail.path,
+                    "fallbackStrategy": "NONE",
+                    "isAvailable"     : true
+                };
+            }
+        }
+
+        // Si ninguna herramienta CLI esta instalada, degradar de forma segura al motor interno
+        return {
+            "selected"        : true,
+            "toolName"        : "Native BoxLang Polyglot Engine",
+            "type"            : "INTERNAL_FALLBACK",
+            "fallbackStrategy": "NATIVE_BOXLANG_DETERMINISTIC_ANALYZER",
+            "isAvailable"     : true,
+            "reason"          : "Herramientas nativas CLI no instaladas en el entorno; degradacion transparente y segura a analizador interno."
+        };
+    }
+
+    /**
+     * Verifica la disponibilidad de un binario en el sistema sin lanzar excepciones.
+     */
+    public struct function checkAvailability( required string binaryName ) {
+        if ( structKeyExists( variables.availabilityCache, arguments.binaryName ) ) {
+            return variables.availabilityCache[ arguments.binaryName ];
+        }
+
+        var isWin = ( server.os.name contains "Windows" );
+        var checkCmd = isWin ? "where.exe" : "which";
+        var out = { "isAvailable": false, "path": "", "binary": arguments.binaryName };
+
+        try {
+            var pb = createObject( "java", "java.lang.ProcessBuilder" ).init( [ checkCmd, arguments.binaryName ] );
+            var proc = pb.start();
+            var reader = createObject( "java", "java.io.BufferedReader" ).init(
+                createObject( "java", "java.io.InputStreamReader" ).init( proc.getInputStream() )
+            );
+            var line = reader.readLine();
+            proc.waitFor();
+            reader.close();
+
+            if ( !isNull( line ) && len( trim( line ) ) > 0 ) {
+                out.isAvailable = true;
+                out.path = trim( line );
+            }
+        } catch ( any e ) {
+            out.isAvailable = false;
+        }
+
+        variables.availabilityCache[ arguments.binaryName ] = out;
+        return out;
+    }
+
+    /**
+     * Clasifica un fallo de herramienta distinguiendo entre:
+     *   - PROJECT_DEFECT: El proyecto tiene un error en su codigo (sintaxis, pruebas, tipos).
+     *   - CONFIG_ERROR: Fallo de configuracion del proyecto (manifest, flags, dependencias no encontradas).
+     *   - ANALYZER_LIMITATION: El analizador se bloqueo, timeout, falta de memoria o binario no compatible.
+     */
+    public struct function classifyToolFailure(
+        required string toolName,
+        numeric exitCode = 1,
+        string output = "",
+        string errorOutput = ""
+    ) {
+        var combinedText = lcase( arguments.output & " " & arguments.errorOutput );
+
+        var result = {
+            "toolName"        : arguments.toolName,
+            "exitCode"        : arguments.exitCode,
+            "classification"  : "PROJECT_DEFECT",
+            "confidence"      : 0.95,
+            "explanation"     : "",
+            "recommendedAction": ""
+        };
+
+        // 1. ERROR DE CONFIGURACION (archivos manifest faltantes o invalidos, dependencias o flags)
+        if ( find( "could not resolve dependencies", combinedText )
+            || find( "configuration error", combinedText )
+            || find( "tsconfig.json not found", combinedText )
+            || find( "pom.xml is invalid", combinedText )
+            || find( "pom.xml not found", combinedText )
+            || find( "package.json parse error", combinedText )
+            || find( "package.json not found", combinedText )
+            || find( "missing required flag", combinedText ) ) {
+            result.classification   = "CONFIG_ERROR";
+            result.explanation      = "El entorno o archivo de configuracion del proyecto tiene inconsistencias o esta ausente.";
+            result.recommendedAction= "Verificar archivos manifest (pom.xml, tsconfig.json, box.json, requirements.txt) y dependencias del entorno.";
+            return result;
+        }
+
+        // 2. LIMITACION DEL ANALIZADOR (recursos agotados, timeout, binario no ejecutable)
+        if ( find( "outofmemory", combinedText )
+            || find( "timeout", combinedText )
+            || find( "segmentation fault", combinedText )
+            || find( "command not found", combinedText )
+            || find( "binary not found", combinedText )
+            || find( "cannot find binary", combinedText )
+            || find( "not recognized as an internal or external command", combinedText ) ) {
+            result.classification   = "ANALYZER_LIMITATION";
+            result.explanation      = "La herramienta " & arguments.toolName & " fallo por limitacion de recursos, timeout o binario no operativo.";
+            result.recommendedAction= "Aumentar limites de memoria/tiempo o delegar al analizador determinista interno.";
+            return result;
+        }
+
+        // 3. DEFECTO DEL PROYECTO (codigo invalido, tests rotos, error de sintaxis)
+        result.classification   = "PROJECT_DEFECT";
+        result.explanation      = "La herramienta detecto errores genuinos en el codigo del proyecto (defectos de sintaxis, violaciones de tipos o pruebas fallidas).";
+        result.recommendedAction= "Revisar los diagnosticos reportados y aplicar parches correctivos a los archivos afectados.";
+        return result;
+    }
+
+    /**
+     * Planifica el analisis multipaso y multilenguaje a partir del censo del repositorio.
+     */
+    public struct function planPolyglotAnalysis( required struct repositoryCensus ) {
+        var steps = [];
+        var langs = arguments.repositoryCensus.distributionByLanguage;
+
+        // Paso 1: Analisis por modulo de cada lenguaje detectado
+        for ( var lang in langs ) {
+            if ( lang == "UNKNOWN_LANGUAGE" || langs[ lang ].files <= 0 ) { continue; }
+            var toolSelected = selectTool( lang, "static_analysis" );
+            arrayAppend( steps, {
+                "stepNumber"  : arrayLen( steps ) + 1,
+                "scope"       : "LANGUAGE_MODULE",
+                "language"    : lang,
+                "fileCount"   : langs[ lang ].files,
+                "lineCount"   : langs[ lang ].lines,
+                "tool"        : toolSelected,
+                "description" : "Analisis estatico y de reglas de seguridad para el modulo " & lang
+            } );
+        }
+
+        // Paso 2: Si el proyecto es multilingue, anadir paso de analisis trans-modulo
+        if ( arguments.repositoryCensus.isMultiLanguage ) {
+            arrayAppend( steps, {
+                "stepNumber"  : arrayLen( steps ) + 1,
+                "scope"       : "CROSS_MODULE_CORRELATION",
+                "language"    : "POLYGLOT",
+                "tool"        : { "toolName": "CrossModuleCorrelator", "type": "INTERNAL" },
+                "description" : "Correlacion trans-modulo de contratos API entre Frontend y Backend"
+            } );
+        }
+
+        return {
+            "totalSteps"     : arrayLen( steps ),
+            "isMultiLanguage": arguments.repositoryCensus.isMultiLanguage,
+            "steps"          : steps
+        };
+    }
+
+}

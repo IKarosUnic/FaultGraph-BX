@@ -1,0 +1,91 @@
+/**
+ * benchmark_capabilities.bxs
+ *
+ * Ejecutor CLI del Banco de Pruebas de Capacidades Open-Source para FaultGraph-BX.
+ *
+ *   boxlang tests/benchmark_capabilities.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+rootDir = replace( rootDir, "tests\", "" );
+rootDir = replace( rootDir, "tests/", "" );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+println( "============================================================" );
+println( " FAULTGRAPH-BX :: OPEN-SOURCE CAPABILITY BENCHMARK SUITE    " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+benchmark = new tests.benchmarks.OpenSourceCapabilityBenchmark( rootDir );
+report = benchmark.runAll();
+
+println( "------------------------------------------------------------" );
+println( "1. RESULTADOS DE FIXTURES Y DETECCION DE REGLAS:" );
+println( "------------------------------------------------------------" );
+f = report.fixtures;
+println( "Total Fixtures Evaluados : " & f.totalFixtures );
+println( "True Positives  (TP)     : " & f.truePositives );
+println( "False Positives (FP)     : " & f.falsePositives );
+println( "True Negatives  (TN)     : " & f.trueNegatives );
+println( "False Negatives (FN)     : " & f.falseNegatives );
+println( "Precision                : " & f.precisionPct & " %" );
+println( "Recall (Cobertura)       : " & f.recallPct & " %" );
+println( "F1-Score                 : " & f.f1Score & " %" );
+println( "" );
+
+println( "DETALLE DE FIXTURES:" );
+for ( d in f.details ) {
+    tag = "[" & d.outcome & "]";
+    println( " " & rjustify( tag, 28 ) & " " & d.id & " (" & d.fileName & "): " & d.notes & " [" & d.durationMs & "ms]" );
+}
+println( "" );
+
+println( "------------------------------------------------------------" );
+println( "2. MUTATION TESTING SCORE (COSMIC-RAY METHODOLOGY):" );
+println( "------------------------------------------------------------" );
+m = report.mutationTesting;
+println( "Mutantes Evaluados : " & m.totalMutants );
+println( "Mutantes Eliminados: " & m.killed & " / " & m.totalMutants );
+println( "Mutantes Sobrevivientes: " & m.survived );
+println( "Mutation Score     : " & m.mutationScorePct & " %" );
+for ( mut in m.mutants ) {
+    println( "  [" & mut.status & "] " & mut.id & " - " & mut.name & ": " & mut.killReason );
+}
+println( "" );
+
+println( "------------------------------------------------------------" );
+println( "3. CONFORMIDAD OASIS SARIF v2.1.0:" );
+println( "------------------------------------------------------------" );
+s = report.sarifCompliance;
+println( "Verificaciones     : " & s.passedChecks & " / " & s.totalChecks );
+println( "Conformidad SARIF  : " & s.compliancePct & " %" );
+for ( chk in s.checks ) {
+    cTag = chk.passed ? "[PASS]" : "[FAIL]";
+    println( "  " & cTag & " " & chk.rule & ": " & chk.desc );
+}
+println( "" );
+
+println( "------------------------------------------------------------" );
+println( "4. LIMITES DE RECURSOS Y RENDIMIENTO:" );
+println( "------------------------------------------------------------" );
+r = report.resourceLimits;
+println( "Prueba             : " & r.test );
+println( "Lineas procesadas  : " & r.lines );
+println( "Tiempo de analisis : " & r.durationMs & " ms (Techo: " & r.ceilingMs & " ms)" );
+println( "Estado Limite      : " & ( r.passed ? "[PASS] Dentro de limites" : "[FAIL] Excedio limite" ) );
+println( "Delta Memoria Heap : " & report.peakMemoryDeltaMb & " MB" );
+println( "Tiempo Total Suite : " & report.totalDurationMs & " ms" );
+println( "============================================================" );
+
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "capability-benchmark-report.json";
+fileWrite( outputPath, jsonSerialize( report ) );
+println( "Reporte formal guardado en: " & outputPath );
+println( "============================================================" );

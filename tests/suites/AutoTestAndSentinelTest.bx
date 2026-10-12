@@ -1,0 +1,260 @@
+/**
+ * AutoTestAndSentinelTest - Banco de pruebas para el generador automatico de
+ * tests de regresion (AutoTestGenerator) y el centinela reactivo (LiveSentinel).
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testAutoTestGeneratorCreatesRegressionSuite();
+        testGeneratedRegressionSuiteExecutesAgainstPatchedService();
+        testLiveSentinelDetectsAppendedExceptions();
+        testLiveSentinelIgnoresNonCrashAppends();
+        testAutoTestGeneratorGeneratesTestBoxSpec();
+        testLogDiagnosticIngestorMasksPii();
+    }
+
+    private void function testAutoTestGeneratorCreatesRegressionSuite() {
+        var testId = "TC-AS-01";
+        var desc   = "AutoTestGenerator sintetiza un script ejecutable a partir de causas diagnosticadas";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.AutoTestGenerator( variables.config );
+            var mockDiagnosis = {
+                "ok": true,
+                "causes": [
+                    {
+                        "code": "NULL_CONFIG_DEREF",
+                        "severity": "CRITICAL",
+                        "title": "Desreferencia a clave inexistente en configuracion",
+                        "sampleError": "Key [fallback] was not found in struct."
+                    },
+                    {
+                        "code": "TYPE_MISMATCH_NUMERIC",
+                        "severity": "HIGH",
+                        "title": "Fallo de coercion de tipo de dato",
+                        "sampleError": "Can't cast [2.5%] to a Number."
+                    }
+                ]
+            };
+
+            var outDir = variables.rootDir & "tests/generated/";
+            var res = gen.generateFromDiagnosis( mockDiagnosis, "target_app.PaymentServicePatched", outDir );
+
+            variables.assert.isTrue( res.ok, "La generacion debe ser exitosa" );
+            variables.assert.isEqual( 2, res.testCount, "Debe generar 2 casos de prueba" );
+            variables.assert.isTrue( fileExists( res.filePath ), "El archivo de prueba debe existir fisicamente" );
+
+            var content = fileRead( res.filePath );
+            variables.assert.isTrue( findNoCase( "NULL_CONFIG_DEREF", content ) > 0, "Debe incluir el caso NULL_CONFIG_DEREF" );
+            variables.assert.isTrue( findNoCase( "TYPE_MISMATCH_NUMERIC", content ) > 0, "Debe incluir el caso TYPE_MISMATCH_NUMERIC" );
+
+            variables.reporter.record( testId, desc, "generateFromDiagnosis", "Script generado", res.fileName, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "generateFromDiagnosis", "Script generado", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testGeneratedRegressionSuiteExecutesAgainstPatchedService() {
+        var testId = "TC-AS-02";
+        var desc   = "El script de regresion generado se ejecuta y verifica la resiliencia del servicio parcheado";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.AutoTestGenerator( variables.config );
+            var mockDiagnosis = {
+                "ok": true,
+                "causes": [
+                    {
+                        "code": "NULL_CONFIG_DEREF",
+                        "severity": "CRITICAL",
+                        "title": "Desreferencia a clave inexistente",
+                        "sampleError": "Key [fallback] not found"
+                    },
+                    {
+                        "code": "TYPE_MISMATCH_NUMERIC",
+                        "severity": "HIGH",
+                        "title": "Fallo de coercion de tipo",
+                        "sampleError": "Can't cast [2.5%] to a Number"
+                    }
+                ]
+            };
+
+            var outDir = variables.rootDir & "tests/generated/";
+            var genRes = gen.generateFromDiagnosis( mockDiagnosis, "target_app.PaymentServicePatched", outDir );
+            variables.assert.isTrue( genRes.ok, "Generacion previa exitosa" );
+
+            // Verificacion directa de que el codigo generado no lanza errores y pasa
+            // El servicio parcheado soporta configuracion incompleta y montos con formato
+            var cfgMissing = { "merchantId": "TEST_MERCHANT", "currency": "USD" };
+            var gw = function( payload ) { throw( type="Timeout", message="Gateway timeout" ); };
+            var svc1 = new target_app.PaymentServicePatched( cfgMissing, gw );
+            var res1 = svc1.charge( "ORD-REG-01", 100.0, "USD" );
+            variables.assert.isTrue( isStruct( res1 ), "Debe retornar struct" );
+            variables.assert.isNotEqual( "FAILED", res1.status, "Servicio parcheado no debe fallar" );
+
+            var cfgRateText = { "fallback": { "surchargePct": "2.5%", "queueName": "offline-test" } };
+            var svc2 = new target_app.PaymentServicePatched( cfgRateText, gw );
+            var res2 = svc2.charge( "ORD-REG-02", "$1,250.00", "USD" );
+            variables.assert.isTrue( isStruct( res2 ), "Debe retornar struct con monto texto" );
+            variables.assert.isTrue( structKeyExists( res2, "surcharge" ) && isNumeric( res2.surcharge ), "Recargo numerico valido" );
+
+            // Ejecucion dinamica del template generado para validar ejecucion aislada en BoxLang
+            var runtime = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+            runtime.executeTemplate( genRes.filePath );
+
+            variables.reporter.record( testId, desc, genRes.fileName, "Ejecucion limpia", "Regresiones superadas", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "Ejecucion de regresion", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testLiveSentinelDetectsAppendedExceptions() {
+        var testId = "TC-AS-03";
+        var desc   = "LiveSentinel detecta excepciones anadidas a un log, diagnostica y dispara AutoTestGenerator";
+        var t0 = getTickCount();
+        var tempLog = variables.rootDir & "scratch/live_sentinel_test.log";
+        try {
+            var sentinel = new models.LiveSentinel( variables.config );
+
+            var crashTrace = "2026-10-10 14:22:01.100 [ERROR] NullConfig: The key [fallback] was not found in the struct." & char( 10 )
+                & "2026-10-10 14:22:01.102 [ERROR] NumericCast: BoxCastException: Can't cast [2.5%] to a Number.";
+
+            fileWrite( tempLog, crashTrace );
+
+            var watchRes = sentinel.watchLog(
+                logPath = tempLog,
+                intervalMs = 10,
+                maxIterations = 1,
+                callback = null,
+                initialOffset = 0
+            );
+
+            variables.assert.isTrue( watchRes.ok, "watchLog debe finalizar correctamente" );
+            variables.assert.isEqual( 1, watchRes.incidentsDetected, "Debe registrar 1 incidente" );
+            variables.assert.isTrue( arrayLen( watchRes.events ) == 1, "Debe tener 1 evento registrado" );
+
+            var evt = watchRes.events[ 1 ];
+            variables.assert.isTrue( evt.diagnosis.ok, "El diagnostico del incidente debe ser valido" );
+            variables.assert.isTrue( evt.generatedTest.ok, "El test de regresion debe generarse automaticamente" );
+            variables.assert.isTrue( fileExists( evt.generatedTest.filePath ), "El archivo del test generado debe existir" );
+
+            if ( fileExists( tempLog ) ) {
+                fileDelete( tempLog );
+            }
+
+            variables.reporter.record( testId, desc, tempLog, "Incidente detectado", "Incidente No. 1 diagnosticado y test generado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempLog ) ) {
+                try { fileDelete( tempLog ); } catch ( any fe ) {}
+            }
+            variables.reporter.record( testId, desc, "LiveSentinel watchLog", "Deteccion", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testLiveSentinelIgnoresNonCrashAppends() {
+        var testId = "TC-AS-04";
+        var desc   = "LiveSentinel discrimina trafico normal sin emitir falsos incidentes";
+        var t0 = getTickCount();
+        var tempLog = variables.rootDir & "scratch/live_sentinel_info.log";
+        try {
+            var sentinel = new models.LiveSentinel( variables.config );
+
+            var normalTraffic = "2026-10-10 14:25:00 [INFO] Heartbeat OK. Worker pool idle: 4/4." & char( 10 )
+                & "2026-10-10 14:25:01 [INFO] Order ORD-9921 processed in 42ms. HTTP 200 OK.";
+
+            fileWrite( tempLog, normalTraffic );
+
+            var watchRes = sentinel.watchLog(
+                logPath = tempLog,
+                intervalMs = 10,
+                maxIterations = 1,
+                callback = null,
+                initialOffset = 0
+            );
+
+            variables.assert.isTrue( watchRes.ok, "watchLog debe finalizar correctamente" );
+            variables.assert.isEqual( 0, watchRes.incidentsDetected, "No debe registrar incidentes para lineas INFO" );
+
+            if ( fileExists( tempLog ) ) {
+                fileDelete( tempLog );
+            }
+
+            variables.reporter.record( testId, desc, tempLog, "0 incidentes para trafico normal", "0 incidentes confirmados", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempLog ) ) {
+                try { fileDelete( tempLog ); } catch ( any fe ) {}
+            }
+            variables.reporter.record( testId, desc, "LiveSentinel trafico normal", "Sin incidentes", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAutoTestGeneratorGeneratesTestBoxSpec() {
+        var testId = "TC-AS-05";
+        var desc   = "AutoTestGenerator sintetiza especificaciones formales compatibles con TestBox BDD";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.AutoTestGenerator( variables.config );
+            var mockDiagnosis = {
+                "ok": true,
+                "causes": [
+                    {
+                        "code": "NULL_CONFIG_DEREF",
+                        "severity": "CRITICAL",
+                        "title": "Desreferencia a clave inexistente en configuracion"
+                    },
+                    {
+                        "code": "TYPE_MISMATCH_NUMERIC",
+                        "severity": "HIGH",
+                        "title": "Fallo de coercion de tipo de dato"
+                    }
+                ]
+            };
+
+            var outDir = variables.rootDir & "tests/generated/";
+            var res = gen.generateTestBoxSpec( mockDiagnosis, "target_app.PaymentServicePatched", outDir );
+
+            variables.assert.isTrue( res.ok, "La generacion de TestBox Spec debe ser exitosa" );
+            variables.assert.isEqual( 2, res.testCount, "Debe generar 2 casos en TestBox Spec" );
+            variables.assert.isTrue( fileExists( res.filePath ), "El archivo Spec generado debe existir fisicamente" );
+
+            var content = fileRead( res.filePath );
+            variables.assert.isTrue( findNoCase( "extends=""testbox.system.BaseSpec""", content ) > 0, "Debe heredar de BaseSpec" );
+            variables.assert.isTrue( findNoCase( "describe(", content ) > 0, "Debe incluir bloque describe()" );
+            variables.assert.isTrue( findNoCase( "it(", content ) > 0, "Debe incluir aserciones it()" );
+
+            variables.reporter.record( testId, desc, "generateTestBoxSpec", "Spec TestBox BDD generado", res.fileName, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "generateTestBoxSpec", "Spec TestBox", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testLogDiagnosticIngestorMasksPii() {
+        var testId = "TC-AS-06";
+        var desc   = "LogDiagnosticIngestor sanitiza PII, tarjetas de credito, JWT y contraseñas de logs";
+        var t0 = getTickCount();
+        try {
+            var ingestor = new models.LogDiagnosticIngestor( variables.config );
+            var rawText = "2026-10-10 [ERROR] Failed order for user alice@example.com with card 4111-2222-3333-4444 and Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sflKxw using apiKey=secret_live_12345";
+            var clean = ingestor.maskSensitiveData( rawText );
+
+            variables.assert.isTrue( find( "[EMAIL_MASKED]", clean ) > 0, "Debe enmascarar correo electronico" );
+            variables.assert.isTrue( find( "[CREDIT_CARD_MASKED]", clean ) > 0, "Debe enmascarar tarjeta de credito" );
+            variables.assert.isTrue( find( "[BEARER_TOKEN_MASKED]", clean ) > 0 || find( "[JWT_TOKEN_MASKED]", clean ) > 0, "Debe enmascarar token" );
+            variables.assert.isTrue( find( "[SECRET_MASKED]", clean ) > 0, "Debe enmascarar apiKey" );
+            variables.assert.isFalse( find( "alice@example.com", clean ), "No debe contener correo sin ofuscar" );
+            variables.assert.isFalse( find( "4111-2222-3333-4444", clean ), "No debe contener tarjeta sin ofuscar" );
+
+            variables.reporter.record( testId, desc, "maskSensitiveData", "PII y secretos ofuscados con exito", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "maskSensitiveData", "Sanitizacion PII", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

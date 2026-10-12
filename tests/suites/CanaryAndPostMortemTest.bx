@@ -1,0 +1,303 @@
+/**
+ * CanaryAndPostMortemTest - Banco de pruebas para CanaryRollbackManager y SrePostMortemGenerator (Fase SRE).
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        variables.fixtureDir = variables.rootDir & "scratch/canary_fixtures/";
+        if ( !directoryExists( variables.fixtureDir ) ) {
+            directoryCreate( variables.fixtureDir, true );
+        }
+        return this;
+    }
+
+    public void function run() {
+        testCanaryStartAndSuccessTransactions();
+        testCanaryAutoRollbackOnErrorBudgetExceeded();
+        testCanaryLatencySlaViolations();
+        testCanarySimulationAndPromotionConfirmation();
+        testSrePostMortemFiveWhysDeduction();
+        testSrePostMortemMttrBreakdown();
+        testSrePostMortemGitOpsPrPackage();
+        testIncidentDirectorCanaryAndPostMortemIntegration();
+    }
+
+    /**
+     * TC-CAN-01: Inicio de Canary y registro de transacciones exitosas.
+     */
+    private void function testCanaryStartAndSuccessTransactions() {
+        var id = "TC-CAN-01";
+        var scenario = "CanaryRollbackManager: inicio de ventana Canary y registro de transacciones exitosas";
+        var t0 = getTickCount();
+        try {
+            var target = variables.fixtureDir & "service_target.bx";
+            var backup = variables.fixtureDir & "service_target.bx.bak";
+            fileWrite( target, "// version parcheada" );
+            fileWrite( backup, "// version original respaldo" );
+
+            var canary = new models.resilience.CanaryRollbackManager( variables.config );
+            var startRes = canary.startCanary( target, backup, { errorBudget: 1, latencySlaMs: 200 } );
+
+            variables.assert.isTrue( startRes.ok, "startCanary debe inicializar correctamente" );
+            variables.assert.isEqual( "CANARY_ACTIVE", canary.getState() );
+
+            // Registrar 3 transacciones sanas
+            var r1 = canary.recordTransaction( true, "", 45 );
+            var r2 = canary.recordTransaction( true, "", 60 );
+            var r3 = canary.recordTransaction( true, "", 55 );
+
+            variables.assert.isEqual( "CANARY_ACTIVE", r3.state );
+            variables.assert.isFalse( r3.rollbackTriggered, "No debe disparar rollback con transacciones sanas" );
+
+            var metrics = canary.getMetrics();
+            variables.assert.isEqual( 3, metrics.observedCalls );
+            variables.assert.isEqual( 3, metrics.successfulCalls );
+            variables.assert.isEqual( 0, metrics.failedCalls );
+            variables.assert.isEqual( 0, metrics.slaViolations );
+
+            variables.reporter.record( id, scenario, "Transacciones sanas", "0 fallos, estado CANARY_ACTIVE", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Transacciones sanas", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-02: Auto-Rollback atomico automatico al superar el presupuesto de error.
+     */
+    private void function testCanaryAutoRollbackOnErrorBudgetExceeded() {
+        var id = "TC-CAN-02";
+        var scenario = "CanaryRollbackManager: auto-rollback atomico al superar el presupuesto de error";
+        var t0 = getTickCount();
+        try {
+            var target = variables.fixtureDir & "rollback_target.bx";
+            var backup = variables.fixtureDir & "rollback_target.bx.bak";
+            var originalCode = "class { function run() { return 'ORIGINAL_STABLE'; } }";
+            var buggyPatch   = "class { function run() { throw('FATAL_REGRESSION'); } }";
+
+            fileWrite( target, buggyPatch );
+            fileWrite( backup, originalCode );
+
+            var canary = new models.resilience.CanaryRollbackManager( variables.config );
+            canary.startCanary( target, backup, { errorBudget: 0, latencySlaMs: 100 } );
+
+            // Transaccion con fallo: con errorBudget=0, este fallo DEBE disparar rollback de inmediato
+            var res = canary.recordTransaction( false, "BoxCastException in fallback", 30 );
+
+            variables.assert.isTrue( res.rollbackTriggered, "Rollback debe haberse disparado" );
+            variables.assert.isEqual( "ROLLBACK_TRIGGERED", canary.getState() );
+
+            // Verificar que el archivo target fue restaurado con el contenido del backup
+            var currentContent = fileRead( target );
+            variables.assert.isEqual( originalCode, currentContent, "El contenido en disco debe coincidir exactamente con el original .bak" );
+
+            var metrics = canary.getMetrics();
+            variables.assert.isEqual( 1, metrics.rollbackCount );
+            variables.assert.isTrue( len( metrics.rollbackReason ) > 0 );
+
+            variables.reporter.record( id, scenario, "Violacion de errorBudget", "Auto-Rollback atomico completado y archivo restaurado", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Violacion de errorBudget", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-03: Deteccion de violaciones de SLA de latencia.
+     */
+    private void function testCanaryLatencySlaViolations() {
+        var id = "TC-CAN-03";
+        var scenario = "CanaryRollbackManager: deteccion y contabilidad de violaciones de SLA de latencia";
+        var t0 = getTickCount();
+        try {
+            var target = variables.fixtureDir & "sla_target.bx";
+            var backup = variables.fixtureDir & "sla_target.bx.bak";
+            fileWrite( target, "// sla test" );
+            fileWrite( backup, "// sla test backup" );
+
+            var canary = new models.resilience.CanaryRollbackManager( variables.config );
+            canary.startCanary( target, backup, { errorBudget: 5, latencySlaMs: 100 } );
+
+            // Transaccion exitosa pero lenta (150ms > SLA de 100ms)
+            var r1 = canary.recordTransaction( true, "", 150 );
+            variables.assert.isEqual( 1, r1.slaViolations );
+
+            // Transaccion rapida (50ms <= SLA)
+            var r2 = canary.recordTransaction( true, "", 50 );
+            variables.assert.isEqual( 1, r2.slaViolations );
+
+            var metrics = canary.getMetrics();
+            variables.assert.isEqual( 2, metrics.observedCalls );
+            variables.assert.isEqual( 1, metrics.slaViolations );
+
+            variables.reporter.record( id, scenario, "SLA monitoring", "1 violacion registrada correctamente", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "SLA monitoring", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-04: Simulacion canary y confirmacion de promocion.
+     */
+    private void function testCanarySimulationAndPromotionConfirmation() {
+        var id = "TC-CAN-04";
+        var scenario = "CanaryRollbackManager: simulacion de transacciones canary y confirmacion definitiva";
+        var t0 = getTickCount();
+        try {
+            var target = variables.fixtureDir & "sim_target.bx";
+            var backup = variables.fixtureDir & "sim_target.bx.bak";
+            fileWrite( target, "// sim test" );
+            fileWrite( backup, "// sim backup" );
+
+            var canary = new models.resilience.CanaryRollbackManager( variables.config );
+            canary.startCanary( target, backup, { errorBudget: 0, latencySlaMs: 500 } );
+
+            // Servicio simulado sano
+            var mockService = {
+                "charge": function( orderId, amount, currency ) {
+                    return { "status": "APPROVED", "orderId": arguments.orderId };
+                }
+            };
+
+            var simResult = canary.runCanarySimulation( mockService );
+            variables.assert.isTrue( simResult.ok, "La simulacion canary debe ser exitosa" );
+            variables.assert.isEqual( "PROMOTION_CONFIRMED", canary.getState() );
+            variables.assert.isEqual( 5, simResult.processedCount );
+
+            variables.reporter.record( id, scenario, "Simulacion Canary", "Transicion a PROMOTION_CONFIRMED", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Simulacion Canary", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-05: Deduccion automatica de los 5 Porques (5 Whys).
+     */
+    private void function testSrePostMortemFiveWhysDeduction() {
+        var id = "TC-CAN-05";
+        var scenario = "SrePostMortemGenerator: deduccion algoritmica de los 5 Porques (5 Whys)";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.diagnosis.SrePostMortemGenerator( variables.config );
+            var mockIncident = {
+                "diagnosis": {
+                    "causes": [
+                        { "code": "TYPE_MISMATCH_NUMERIC", "severity": "CRITICAL" },
+                        { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL" }
+                    ]
+                }
+            };
+
+            var whys = gen.deduceFiveWhys( mockIncident );
+            variables.assert.isEqual( 5, arrayLen( whys ), "Deben generarse exactamente 5 niveles de causalidad" );
+            variables.assert.isTrue( findNoCase( "fallbackCharge", whys[ 1 ].answer ) > 0, "Nivel 1 debe mencionar la falla de fallback" );
+            variables.assert.isTrue( findNoCase( "BoxCastException", whys[ 2 ].answer ) > 0, "Nivel 2 debe identificar excepcion de runtime" );
+            variables.assert.isTrue( findNoCase( "String", whys[ 3 ].answer ) > 0, "Nivel 3 debe deducir operacion sobre String" );
+            variables.assert.isTrue( findNoCase( "guardas", whys[ 4 ].answer ) > 0 || findNoCase( "coalescencia", whys[ 4 ].answer ) > 0, "Nivel 4 debe advertir falta de guardas" );
+            variables.assert.isTrue( findNoCase( "caos", whys[ 5 ].answer ) > 0 || findNoCase( "CI", whys[ 5 ].answer ) > 0, "Nivel 5 debe conectar con causa sistemica en CI" );
+
+            variables.reporter.record( id, scenario, "Deduccion 5 Whys", "5 niveles generados con precision causal", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Deduccion 5 Whys", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-06: Desglose de metricas MTTR y coherencia temporal.
+     */
+    private void function testSrePostMortemMttrBreakdown() {
+        var id = "TC-CAN-06";
+        var scenario = "SrePostMortemGenerator: desglose cuantitativo de MTTR (TTD, TTI, TTP, TTC)";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.diagnosis.SrePostMortemGenerator( variables.config );
+            var mockIncident = {
+                "id": "INC-TEST-001",
+                "durationMs": 3000,
+                "before": { "survived": 1, "total": 8 },
+                "after": { "survived": 8, "total": 8 },
+                "diagnosis": { "causes": [ { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL" } ] }
+            };
+
+            var res = gen.generate( mockIncident );
+            variables.assert.isTrue( res.ok, "generate debe completar correctamente" );
+            variables.assert.isTrue( fileExists( res.md ), "El archivo post-mortem Markdown debe existir" );
+            variables.assert.isTrue( fileExists( res.json ), "El archivo post-mortem JSON debe existir" );
+
+            var mttr = res.postMortem.mttr;
+            variables.assert.isEqual( 3000, mttr.totalDurationMs );
+            variables.assert.isTrue( mttr.ttdMs > 0, "TTD debe ser > 0" );
+            variables.assert.isTrue( mttr.ttiMs > 0, "TTI debe ser > 0" );
+            variables.assert.isTrue( mttr.ttpMs > 0, "TTP debe ser > 0" );
+            variables.assert.isEqual( 3000, mttr.ttdMs + mttr.ttiMs + mttr.ttpMs + mttr.ttcMs, "La suma de fases debe igualar la duracion total" );
+
+            variables.reporter.record( id, scenario, "Desglose MTTR", "Suma y deltas de tiempo verificados", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Desglose MTTR", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-07: Generacion del paquete GitOps PR y acciones preventivas.
+     */
+    private void function testSrePostMortemGitOpsPrPackage() {
+        var id = "TC-CAN-07";
+        var scenario = "SrePostMortemGenerator: sintesis de paquete GitOps PR y acciones preventivas SRE";
+        var t0 = getTickCount();
+        try {
+            var gen = new models.diagnosis.SrePostMortemGenerator( variables.config );
+            var mockIncident = {
+                "id": "INC-GITOPS-99",
+                "durationMs": 2000,
+                "diagnosis": { "causes": [] }
+            };
+
+            var res = gen.generate( mockIncident );
+            var git = res.gitOpsPr;
+            variables.assert.isTrue( findNoCase( "fix/incident-zero-", git.branchName ) > 0, "Debe proponer nombre de rama GitOps canonico" );
+            variables.assert.isTrue( findNoCase( "INC-GITOPS-99", git.commitMessage ) > 0, "El commit debe referenciar el ID del incidente" );
+            variables.assert.isTrue( findNoCase( "Pull Request", git.prBody ) > 0, "El cuerpo del PR debe contener estructura markdown" );
+
+            var actions = res.postMortem.actionItems;
+            variables.assert.isTrue( arrayLen( actions ) >= 3, "Debe sugerir al menos 3 acciones preventivas" );
+            variables.assert.isEqual( "P0", actions[ 1 ].priority, "La primera accion debe ser de maxima prioridad P0" );
+
+            variables.reporter.record( id, scenario, "Paquete GitOps y Action Items", "Rama, commit y prioridades P0/P1 validadas", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Paquete GitOps y Action Items", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-CAN-08: Integracion completa de IncidentDirector con Canary y Post-Mortem.
+     */
+    private void function testIncidentDirectorCanaryAndPostMortemIntegration() {
+        var id = "TC-CAN-08";
+        var scenario = "IncidentDirector: getters y cableado de CanaryRollbackManager y SrePostMortemGenerator";
+        var t0 = getTickCount();
+        try {
+            var healer = new models.Healer( variables.config );
+            var originalFactory = function( struct serviceConfig, any gateway ) {
+                return new target_app.PaymentService( serviceConfig, gateway );
+            };
+            var chaos = new models.ChaosEngine( originalFactory, variables.config.getTargetServiceConfig(), "Test" );
+            var verifyFactory = function() { return chaos; };
+
+            var director = new agents.IncidentDirector( variables.config, healer, chaos, verifyFactory );
+
+            var canaryMgr = director.getCanaryManager();
+            var pmGen     = director.getPostMortemGenerator();
+
+            variables.assert.isTrue( !isNull( canaryMgr ), "getCanaryManager() no debe ser nulo" );
+            variables.assert.isTrue( !isNull( pmGen ), "getPostMortemGenerator() no debe ser nulo" );
+            variables.assert.isEqual( "IDLE", canaryMgr.getState(), "Estado inicial del CanaryManager debe ser IDLE" );
+
+            variables.reporter.record( id, scenario, "Integracion IncidentDirector", "Getters y componentes integrados correctamente", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Integracion IncidentDirector", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

@@ -1,0 +1,8 @@
+/**
+ * Clean Example: Thread-safe mutation inside single-line lock
+ */
+class {
+    function increment() {
+        lock scope="application" timeout="5" { application.requestCount = application.requestCount + 1; }
+    }
+}

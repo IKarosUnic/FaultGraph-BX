@@ -1,0 +1,167 @@
+/**
+ * IndependentValidator - Validador determinista e independiente de salidas de IA.
+ *
+ * Mision:
+ *   Garantiza que ningun diagnostico, auditoria o sugerencia de una IA local
+ *   sea aceptado sin contrastarse contra la evidencia reproducible del runtime,
+ *   la existencia real en el codigo fuente y las reglas del catalogo.
+ *
+ * Rechaza:
+ *   - Alucinaciones de vulnerabilidades no presentes en el codigo.
+ *   - Hipotesis que contradicen las trazas reales del runtime.
+ *   - Remediaciones que introducen funciones o clases no seguras.
+ */
+class {
+
+    public any function init( required any config ) {
+        variables.config = arguments.config;
+        return this;
+    }
+
+    /**
+     * Valida de forma independiente los hallazgos de seguridad emitidos por la IA.
+     * Descarta hallazgos basados en codigo inexistente (alucinaciones).
+     */
+    public struct function validateAuditFindings( required string codeSnippet, required array findings ) {
+        var validated = [];
+        var rejected  = [];
+
+        for ( var f in arguments.findings ) {
+            var snippetRef = structKeyExists( f, "snippet" ) ? trim( f.snippet ) : "";
+            var codeName   = structKeyExists( f, "code" ) ? f.code : "GENERIC_RISK";
+            var riskDesc   = structKeyExists( f, "risk" ) ? f.risk : "";
+
+            var existsInSource = false;
+            if ( len( snippetRef ) > 0 ) {
+                existsInSource = findNoCase( snippetRef, arguments.codeSnippet ) > 0;
+            } else {
+                // Si la IA no proveyo snippet exacto, verificar si los terminos clave estan en el codigo
+                var candidateTokens = [ "surchargePct", "queueName", "amount", "offlineQueue", "config.fallback" ];
+                for ( var tok in candidateTokens ) {
+                    if ( findNoCase( tok, riskDesc ) && findNoCase( tok, arguments.codeSnippet ) ) {
+                        existsInSource = true;
+                        break;
+                    }
+                }
+            }
+
+            if ( existsInSource ) {
+                arrayAppend( validated, {
+                    "code"           : codeName,
+                    "risk"           : riskDesc,
+                    "snippet"        : snippetRef,
+                    "verified"       : true,
+                    "validationNote" : "Confirmado en el codigo fuente analizado"
+                } );
+            } else {
+                arrayAppend( rejected, {
+                    "code"           : codeName,
+                    "risk"           : riskDesc,
+                    "snippet"        : snippetRef,
+                    "verified"       : false,
+                    "rejectionReason": "REJECTED_HALLUCINATION: El fragmento o patron no existe en el codigo analizado"
+                } );
+            }
+        }
+
+        var total = arrayLen( arguments.findings );
+        var rate  = total > 0 ? round( ( arrayLen( validated ) / total ) * 1000 ) / 10 : 100.0;
+
+        return {
+            "totalReported"  : total,
+            "validatedCount" : arrayLen( validated ),
+            "rejectedCount"  : arrayLen( rejected ),
+            "validationRate" : rate,
+            "validated"      : validated,
+            "rejected"       : rejected
+        };
+    }
+
+    /**
+     * Valida de forma independiente el cuestionamiento (Devil's Advocate) de la IA.
+     * Comprueba si la hipotesis de la IA contradice las evidencias del ChaosEngine.
+     */
+    public struct function validateChallenge( required struct deterministicDiagnosis, required struct aiChallenge, required struct chaosReport ) {
+        var res = {
+            "accepted"        : false,
+            "verdict"         : "REJECTED_UNSUBSTANTIATED",
+            "reason"          : "",
+            "advisoryNotes"   : "",
+            "verifiedAgainst" : 0
+        };
+
+        if ( !structKeyExists( arguments.aiChallenge, "ok" ) || !arguments.aiChallenge.ok ) {
+            res.reason = "La IA no genero un cuestionamiento valido.";
+            return res;
+        }
+
+        var altProposed = structKeyExists( arguments.aiChallenge, "proposedAlternative" ) ? trim( arguments.aiChallenge.proposedAlternative ) : "";
+        var riskNotes   = structKeyExists( arguments.aiChallenge, "riskIdentified" ) ? trim( arguments.aiChallenge.riskIdentified ) : "";
+
+        // Si la IA propone que el fallo fue de infraestructura cuando el runtime reporta Cast o Null, se rechaza
+        var hasCastErrors = false;
+        var hasNullErrors = false;
+        for ( var r in arguments.chaosReport.results ) {
+            if ( r.survived ) { continue; }
+            res.verifiedAgainst = res.verifiedAgainst + 1;
+            var err = lcase( r.errorType & " " & r.errorMessage );
+            if ( find( "cast", err ) || find( "number", err ) ) { hasCastErrors = true; }
+            if ( find( "key", err ) || find( "null", err ) || find( "not found", err ) ) { hasNullErrors = true; }
+        }
+
+        if ( findNoCase( "INFRASTRUCTURE", altProposed ) || findNoCase( "TIMEOUT", altProposed ) ) {
+            if ( hasCastErrors || hasNullErrors ) {
+                res.accepted = false;
+                res.verdict  = "REJECTED_CONTRADICTS_EVIDENCE";
+                res.reason   = "La hipotesis contradice la evidencia del runtime BoxLang (BoxCastException o KeyNotFound dentro del fallback).";
+                return res;
+            }
+        }
+
+        // Si la IA aporta una observacion secundaria valida (ej. riesgo de tipo o de validacion de monto)
+        if ( len( riskNotes ) > 0 && !findNoCase( "BLOCKED", riskNotes ) ) {
+            res.accepted      = true;
+            res.verdict       = "ACCEPTED_ADVISORY";
+            res.reason        = "Cuestionamiento consistente con los controles deterministas. Incorporado como nota consultiva.";
+            res.advisoryNotes = riskNotes;
+            return res;
+        }
+
+        res.accepted = false;
+        res.verdict  = "REJECTED_INSUFFICIENT_EVIDENCE";
+        res.reason   = "El cuestionamiento carece de fundamentacion en trazas reales.";
+        return res;
+    }
+
+    /**
+     * Valida de forma independiente la integridad y seguridad del codigo parcheado.
+     * Asegura que no se hayan introducido llamadas no permitidas al sistema operativo ni Java reflexivo.
+     */
+    public struct function validatePatchSafety( required string patchContent ) {
+        var dangerousPatterns = [
+            "java.lang.Runtime",
+            "ProcessBuilder",
+            "executeCommandLine",
+            "cfexecute",
+            "System.exit",
+            "URLClassLoader",
+            "eval(",
+            "createObject( 'java', 'java.lang.ProcessBuilder"
+        ];
+
+        for ( var pattern in dangerousPatterns ) {
+            if ( findNoCase( pattern, arguments.patchContent ) > 0 ) {
+                return {
+                    "safe"    : false,
+                    "reason"  : "Inyeccion de patron no autorizado detectada en el parche: " & pattern
+                };
+            }
+        }
+
+        return {
+            "safe"   : true,
+            "reason" : "Parche validado: libre de patrones no autorizados o llamadas peligrosas."
+        };
+    }
+
+}

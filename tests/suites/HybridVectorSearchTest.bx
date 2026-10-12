@@ -1,0 +1,150 @@
+/**
+ * HybridVectorSearchTest - Banco de pruebas para la busqueda vectorial hibrida (RRF) en KnowledgeBase.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testVectorStoreIntegration();
+        testHybridRrfScoring();
+        testSemanticRecallWithoutExactKeywords();
+        testCategoryFilteringInHybrid();
+        testVectorStoreDirectAccess();
+        testOllamaEmbeddingFallback();
+    }
+
+    private void function testVectorStoreIntegration() {
+        var id = "TC-HVS-01";
+        var scenario = "Indexacion automatica de catalogo semilla en VectorStore";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+            var vs  = kb.getVectorStore();
+
+            variables.assert.isTrue( !isNull( vs ), "VectorStore no debe ser nulo" );
+            variables.assert.isTrue( vs.count() >= 7, "VectorStore debe contener al menos 7 documentos indexados" );
+
+            variables.reporter.record( id, scenario, "Integracion VectorStore en KB", ">= 7 vectores indexados", "Vectores inicializados (" & vs.count() & " docs)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Integracion VectorStore", ">= 7 vectores", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testHybridRrfScoring() {
+        var id = "TC-HVS-02";
+        var scenario = "Calculo y presencia de metricas RRF (lexical + vector)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var hits = kb.hybridSearch( "fallback struct dereference casting", "", 3 );
+
+            variables.assert.isTrue( isArray( hits ) );
+            variables.assert.isTrue( arrayLen( hits ) > 0, "Debe retornar al menos 1 resultado" );
+            var top = hits[ 1 ];
+            variables.assert.isTrue( structKeyExists( top, "rrfScore" ), "Debe tener rrfScore" );
+            variables.assert.isTrue( structKeyExists( top, "vectorSimilarity" ), "Debe tener vectorSimilarity" );
+            variables.assert.isTrue( structKeyExists( top, "lexicalRank" ), "Debe tener lexicalRank" );
+            variables.assert.isTrue( structKeyExists( top, "vectorRank" ), "Debe tener vectorRank" );
+            variables.assert.isTrue( top.rrfScore > 0, "rrfScore debe ser > 0" );
+
+            variables.reporter.record( id, scenario, "Metricas RRF en busqueda hibrida", "rrfScore y similitudes calculadas", "Score RRF: " & top.rrfScore & ", Sim: " & top.vectorSimilarity, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Metricas RRF", "Scores calculados", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testSemanticRecallWithoutExactKeywords() {
+        var id = "TC-HVS-03";
+        var scenario = "Recuperacion semantica de conceptos con terminos no identicos";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            // Consulta que no comparte palabras exactas de sintaxis pero si el concepto de contingencia
+            var hits = kb.hybridSearch( "falla de ejecucion por tipos incompatibles", "", 3 );
+
+            variables.assert.isTrue( arrayLen( hits ) > 0, "Debe encontrar coincidencias semanticas" );
+            // Debe recuperar o el patron de arquitectura de fallback o incidentes de tipos
+            var foundRelevant = false;
+            for ( var h in hits ) {
+                if ( h.id == "KB-ARC-001" || find( "HIST-", h.id ) == 1 || h.id == "KB-BXL-001" || find( "TYPE", h.id ) > 0 ) {
+                    foundRelevant = true;
+                    break;
+                }
+            }
+            variables.assert.isTrue( foundRelevant, "Debe recuperar un precedente relevante semantico" );
+
+            variables.reporter.record( id, scenario, "Recuperacion semantica conceptual", "Precedente relevante recuperado", "Precedente semantico: " & hits[ 1 ].id, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Recuperacion conceptual", "Precedente encontrado", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testCategoryFilteringInHybrid() {
+        var id = "TC-HVS-04";
+        var scenario = "Preservacion estricta del filtro de categoria en RRF";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var hits = kb.hybridSearch( "injection vulnerability traversal", "SECURITY_CWE", 5 );
+            variables.assert.isTrue( arrayLen( hits ) > 0 );
+            for ( var h in hits ) {
+                variables.assert.isEqual( "SECURITY_CWE", h.category, "La categoria debe coincidir con el filtro" );
+            }
+
+            variables.reporter.record( id, scenario, "Filtro de categoria en RRF", "100% hits pertenecen a SECURITY_CWE", "Filtro validado (" & arrayLen( hits ) & " hits)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Filtro categoria RRF", "SECURITY_CWE", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testVectorStoreDirectAccess() {
+        var id = "TC-HVS-05";
+        var scenario = "Acceso directo y consultas sobre VectorStore interno";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+            var vs  = kb.getVectorStore();
+
+            var vHits = vs.search( "remediation path traversal", 3, 0.1 );
+            variables.assert.isTrue( isArray( vHits ) );
+            variables.assert.isTrue( arrayLen( vHits ) > 0 );
+            variables.assert.isTrue( structKeyExists( vHits[ 1 ], "score" ) );
+
+            variables.reporter.record( id, scenario, "Consultas directas a VectorStore", "Array de hits con score vectorial", "Hits vectoriales devueltos (" & arrayLen( vHits ) & " hits)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Consultas VectorStore", "Hits con score", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testOllamaEmbeddingFallback() {
+        var id = "TC-HVS-06";
+        var scenario = "Vectorizacion de embeddings con degradacion fluida a SimHash/Int8";
+        var t0 = getTickCount();
+        try {
+            var vs = new models.VectorStore( 64, true, "", true, "http://localhost:11434/api/embeddings", "nomic-embed-text" );
+            var emb = vs.embedWithOllama( "Null dereference in fallback configuration handler" );
+
+            variables.assert.isTrue( isArray( emb ), "Debe retornar un array numerico" );
+            variables.assert.isTrue( arrayLen( emb ) > 0, "El vector de embeddings no debe estar vacio" );
+
+            variables.reporter.record( id, scenario, "embedWithOllama", "Degradacion fluida y vector generado", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "embedWithOllama", "Exito", e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

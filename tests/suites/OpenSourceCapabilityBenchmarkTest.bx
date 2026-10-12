@@ -1,0 +1,95 @@
+/**
+ * OpenSourceCapabilityBenchmarkTest.bx - Suite B19:
+ * Banco de pruebas permanente de capacidades open-source, precision, recall y SARIF.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testCapabilityBenchmarkPrecisionAndRecall();
+        testCosmicRayMutationScore();
+        testOasisSarifSpecificationCompliance();
+        testResourceLimitsScalability();
+    }
+
+    private void function testCapabilityBenchmarkPrecisionAndRecall() {
+        var id = "TC-OSB-01";
+        var scenario = "Evaluacion de precision (>=95%) y recall (>=90%) contra fixtures controlados";
+        var t0 = getTickCount();
+        try {
+            var bench = new tests.benchmarks.OpenSourceCapabilityBenchmark( variables.rootDir );
+            var res = bench.runAll();
+            var f = res.fixtures;
+
+            variables.assert.isTrue( f.precisionPct >= 95.0, "La precision debe ser >= 95%, obtenido: " & f.precisionPct );
+            variables.assert.isTrue( f.recallPct >= 90.0, "El recall debe ser >= 90%, obtenido: " & f.recallPct );
+            variables.assert.isEqual( 0, f.falsePositives, "No debe haber falsos positivos en el conjunto controlado" );
+            variables.assert.isEqual( 0, f.falseNegatives, "No debe haber falsos negativos en el conjunto controlado" );
+
+            variables.reporter.record( id, scenario, "28 fixtures controlados", "Precision >=95% y Recall >=90%", "Precision: " & f.precisionPct & "% | Recall: " & f.recallPct & "% (F1: " & f.f1Score & "%)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Benchmark precision/recall", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testCosmicRayMutationScore() {
+        var id = "TC-OSB-02";
+        var scenario = "Mutation Testing formal (metodologia Cosmic-Ray) contra 5 mutantes de codigo";
+        var t0 = getTickCount();
+        try {
+            var bench = new tests.benchmarks.OpenSourceCapabilityBenchmark( variables.rootDir );
+            var res = bench.runAll();
+            var m = res.mutationTesting;
+
+            variables.assert.isTrue( m.mutationScorePct >= 80.0, "El Mutation Score debe ser >= 80%, obtenido: " & m.mutationScorePct );
+            variables.assert.isEqual( 0, m.survived, "Todos los mutantes sintetizados deben ser eliminados (killed)" );
+
+            variables.reporter.record( id, scenario, "5 mutantes AST/operador", "Mutation Score >=80%", "Mutation Score: " & m.mutationScorePct & "% (" & m.killed & "/" & m.totalMutants & " eliminados)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Mutation testing", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testOasisSarifSpecificationCompliance() {
+        var id = "TC-OSB-03";
+        var scenario = "Conformidad estricta con la especificacion OASIS SARIF v2.1.0 (9 verificaciones)";
+        var t0 = getTickCount();
+        try {
+            var bench = new tests.benchmarks.OpenSourceCapabilityBenchmark( variables.rootDir );
+            var res = bench.runAll();
+            var s = res.sarifCompliance;
+
+            variables.assert.isEqual( 100.0, s.compliancePct, "La conformidad SARIF debe ser 100%" );
+            variables.assert.isEqual( s.totalChecks, s.passedChecks, "Todas las verificaciones SARIF deben pasar" );
+
+            variables.reporter.record( id, scenario, "9 verificaciones OASIS SARIF", "100% de cumplimiento", "Conformidad: " & s.compliancePct & "% (" & s.passedChecks & "/" & s.totalChecks & " verificadas)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "OASIS SARIF compliance", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testResourceLimitsScalability() {
+        var id = "TC-OSB-04";
+        var scenario = "Escalabilidad y limites de recursos ante archivo masivo de 5,000 lineas";
+        var t0 = getTickCount();
+        try {
+            var bench = new tests.benchmarks.OpenSourceCapabilityBenchmark( variables.rootDir );
+            var res = bench.runAll();
+            var r = res.resourceLimits;
+
+            variables.assert.isTrue( r.passed, "El procesamiento masivo debe completarse dentro del limite" );
+            variables.assert.isTrue( r.durationMs < r.ceilingMs, "Duracion (" & r.durationMs & "ms) debe ser menor a " & r.ceilingMs & "ms" );
+
+            variables.reporter.record( id, scenario, "5,002 lineas BoxLang", "Completar en <5000 ms", "Procesado en " & r.durationMs & " ms (Heap delta: " & res.peakMemoryDeltaMb & " MB)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Resource limits", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

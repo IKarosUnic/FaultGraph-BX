@@ -1,0 +1,200 @@
+/**
+ * AttackSurfaceReconstructor.bx - Reconstructor de Superficie de Ataque para FaultGraph-BX.
+ *
+ * Misión:
+ *   1. Reconstruye la superficie de ataque a partir del código, configuración, dependencias y rutas.
+ *   2. Identifica puntos de entrada (rutas HTTP, llamadas CLI, handlers públicos, webhooks).
+ *   3. Rastrea flujos de datos y operaciones sensibles (SQL, comandos SO, I/O, deserialización, HTTP saliente).
+ *   4. Identifica límites de confianza (zonas públicas vs autenticadas vs servicios internos).
+ *   5. Pobla el SharedEvidenceGraph con nodos de tipo ENDPOINT, COMPONENT y relaciones de invocación.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    public any function init( any config = null, any evidenceGraph = null ) {
+        variables.config = arguments.config;
+        variables.graph  = structKeyExists( arguments, "evidenceGraph" ) && !isNull( arguments.evidenceGraph ) ? arguments.evidenceGraph : new models.synergy.SharedEvidenceGraph();
+        return this;
+    }
+
+    public any function getGraph() { return variables.graph; }
+
+    /**
+     * Reconstruye la superficie de ataque de un archivo o directorio completo.
+     */
+    public struct function reconstruct( required string targetPath ) {
+        var t0 = getTickCount();
+        var safePath = replace( arguments.targetPath, "\", "/", "all" );
+        var isDir = directoryExists( safePath );
+
+        var entryPoints = [];
+        var sensitiveOperations = [];
+        var trustBoundaries = [];
+
+        var filesToScan = [];
+        if ( isDir ) {
+            var allFiles = directoryList( safePath, true, "path" );
+            for ( var f in allFiles ) {
+                var nf = replace( f, "\", "/", "all" );
+                var rel = replace( nf, safePath, "" );
+                var ext = listLast( nf, "." );
+                if ( listFindNoCase( "bx,bxs,java,py,js,ts,c,cpp,h", ext ) && !findNoCase( "/reports/", rel ) && !findNoCase( "/build/", rel ) && !findNoCase( "/.git/", rel ) ) {
+                    arrayAppend( filesToScan, nf );
+                }
+            }
+        } else if ( fileExists( safePath ) ) {
+            arrayAppend( filesToScan, safePath );
+        }
+
+        for ( var filePath in filesToScan ) {
+            var content = fileRead( filePath );
+            var lines = listToArray( content, char( 10 ), true );
+            var relPath = replace( filePath, safePath, "" );
+            if ( left( relPath, 1 ) == "/" ) { relPath = right( relPath, len( relPath ) - 1 ); }
+            var fileNodeId = "FILE:" & filePath;
+
+            variables.graph.addNode( fileNodeId, "FILE", relPath, { "path": filePath, "lines": arrayLen( lines ) } );
+
+            // 1. Detectar Puntos de Entrada
+            inspectEntryPoints( filePath, fileNodeId, content, lines, entryPoints );
+
+            // 2. Detectar Operaciones Sensibles
+            inspectSensitiveOperations( filePath, fileNodeId, content, lines, sensitiveOperations );
+
+            // 3. Detectar Límites de Confianza y Autenticación
+            inspectTrustBoundaries( filePath, fileNodeId, content, lines, trustBoundaries );
+        }
+
+        return {
+            "targetPath"                : safePath,
+            "durationMs"                : getTickCount() - t0,
+            "totalFilesInspected"       : arrayLen( filesToScan ),
+            "entryPointsCount"          : arrayLen( entryPoints ),
+            "sensitiveOperationsCount"   : arrayLen( sensitiveOperations ),
+            "trustBoundariesCount"      : arrayLen( trustBoundaries ),
+            "entryPoints"               : entryPoints,
+            "sensitiveOperations"       : sensitiveOperations,
+            "trustBoundaries"           : trustBoundaries,
+            "graphSummary"              : variables.graph.exportGraph()
+        };
+    }
+
+    private void function inspectEntryPoints( required string filePath, required string fileNodeId, required string content, required array lines, required array entryPoints ) {
+        // A. Endpoints HTTP (Spring Boot @GetMapping/@PostMapping, ColdBox routes, FastAPI @app.get/post, Express app.get/post)
+        var routeMatches = reMatchNoCase( "(@?(app|router|bp)\.(get|post|put|delete|patch|route)\s*\(\s*[""']([^""']+)[""']|@(GetMapping|PostMapping|PutMapping|DeleteMapping|RequestMapping)\s*\(\s*[""']([^""']+)[""']|(route|get|post|put|delete)\s*\(\s*[""']([^""']+)[""'])", arguments.content );
+        for ( var rm in routeMatches ) {
+            var route = reReplaceNoCase( rm, ".*[""']([^""']+)[""'].*", "\1" );
+            var epId = "EP:" & arguments.filePath & ":" & route;
+            var epStruct = {
+                "id"         : epId,
+                "type"       : "HTTP_ROUTE",
+                "route"      : route,
+                "filePath"   : arguments.filePath,
+                "visibility" : ( findNoCase( "/api/public", route ) || findNoCase( "/health", route ) ) ? "PUBLIC" : "AUTHENTICATED"
+            };
+            arrayAppend( arguments.entryPoints, epStruct );
+
+            var epNode = variables.graph.addNode( epId, "ENDPOINT", route, epStruct );
+            variables.graph.addEdge( arguments.fileNodeId, epId, "EXPOSES", { "route": route } );
+        }
+
+        // B. Métodos Públicos en Servicios y Handlers
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = trim( arguments.lines[ i ] );
+            if ( reFindNoCase( "^public\s+(any|struct|array|void|boolean|string|numeric)?\s*function\s+([a-zA-Z0-9_]+)\s*\(", line ) ) {
+                var fnName = reReplaceNoCase( line, ".*function\s+([a-zA-Z0-9_]+)\s*\(.*", "\1" );
+                if ( fnName != "init" ) {
+                    var fnId = "FN:" & arguments.filePath & ":" & fnName;
+                    var fnStruct = {
+                        "id"       : fnId,
+                        "type"     : "PUBLIC_METHOD",
+                        "name"     : fnName,
+                        "filePath" : arguments.filePath,
+                        "line"     : i
+                    };
+                    arrayAppend( arguments.entryPoints, fnStruct );
+
+                    variables.graph.addNode( fnId, "FUNCTION", fnName, fnStruct );
+                    variables.graph.addEdge( arguments.fileNodeId, fnId, "CONTAINS", { "line": i } );
+                }
+            }
+        }
+    }
+
+    private void function inspectSensitiveOperations( required string filePath, required string fileNodeId, required string content, required array lines, required array sensitiveOperations ) {
+        for ( var i = 1; i <= arrayLen( lines ); i++ ) {
+            var line = trim( lines[ i ] );
+            if ( left( line, 2 ) == "//" || left( line, 1 ) == "*" ) { continue; }
+
+            // 1. Base de datos / Consultas SQL
+            if ( reFindNoCase( "(queryExecute|cursor\.execute|createStatement|executeQuery|prepareStatement|pool\.query)", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "DATABASE_QUERY", line, "CWE-89", arguments.sensitiveOperations );
+            }
+            // 2. Ejecución de comandos del SO
+            if ( reFindNoCase( "(Runtime\.getRuntime|ProcessBuilder|subprocess\.|os\.system|cfexecute|executeCommandLine|child_process\.(exec|spawn)|system\(|popen\()", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "COMMAND_EXECUTION", line, "CWE-78", arguments.sensitiveOperations );
+            }
+            // 3. Deserialización de objetos
+            if ( reFindNoCase( "(readObject|pickle\.loads|unserialize|ObjectInputStream)", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "DESERIALIZATION", line, "CWE-502", arguments.sensitiveOperations );
+            }
+            // 4. Salida HTTP a terceros (Gateway / Webhook)
+            if ( reFindNoCase( "(httpGet|httpPost|requests\.(get|post)|fetch\(|axios\.|HttpURLConnection)", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "EXTERNAL_NETWORK_CALL", line, "CWE-918", arguments.sensitiveOperations );
+            }
+            // 5. I/O de Archivos y Path Traversal
+            if ( reFindNoCase( "(fileRead\(|open\(|new\s+FileInputStream|new\s+File\(|fs\.readFile\(|fs\.readFileSync\()", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "FILE_IO_ACCESS", line, "CWE-22", arguments.sensitiveOperations );
+            }
+            // 6. Operaciones inseguras de memoria en C/C++ (Buffer Overflow)
+            if ( reFindNoCase( "\b(strcpy|strcat|sprintf|gets|memcpy)\s*\(", line ) ) {
+                recordSensitiveOp( arguments.filePath, arguments.fileNodeId, i, "UNSAFE_BUFFER_OPERATION", line, "CWE-120", arguments.sensitiveOperations );
+            }
+        }
+    }
+
+    private void function recordSensitiveOp( required string filePath, required string fileNodeId, required numeric line, required string category, required string snippet, required string cwe, required array sensitiveOperations ) {
+        var opId = "OP:" & arguments.filePath & ":" & arguments.line & ":" & arguments.category;
+        var opStruct = {
+            "id"       : opId,
+            "category" : arguments.category,
+            "cwe"      : arguments.cwe,
+            "filePath" : arguments.filePath,
+            "line"     : arguments.line,
+            "snippet"  : arguments.snippet
+        };
+        arrayAppend( arguments.sensitiveOperations, opStruct );
+
+        variables.graph.addNode( opId, "OPERATION", arguments.category & "@L" & arguments.line, opStruct );
+        variables.graph.addEdge( arguments.fileNodeId, opId, "INVOKES", { "line": arguments.line, "cwe": arguments.cwe } );
+    }
+
+    private void function inspectTrustBoundaries( required string filePath, required string fileNodeId, required string content, required array lines, required array trustBoundaries ) {
+        var hasAuthCheck = (
+            findNoCase( "securityService", arguments.content ) ||
+            findNoCase( "isAuthenticated", arguments.content ) ||
+            findNoCase( "PreAuthorize", arguments.content ) ||
+            findNoCase( "RolesAllowed", arguments.content ) ||
+            findNoCase( "Secured", arguments.content ) ||
+            findNoCase( "loginRequired", arguments.content ) ||
+            findNoCase( "login_required", arguments.content ) ||
+            findNoCase( "jwt.verify", arguments.content ) ||
+            findNoCase( "passport.authenticate", arguments.content )
+        );
+        var boundaryType = hasAuthCheck ? "AUTHENTICATED_ZONE" : "PUBLIC_UNAUTHENTICATED_ZONE";
+        var tbId = "TB:" & arguments.filePath;
+
+        var tbStruct = {
+            "id"           : tbId,
+            "boundaryType" : boundaryType,
+            "filePath"     : arguments.filePath,
+            "hasAuthCheck" : hasAuthCheck
+        };
+        arrayAppend( arguments.trustBoundaries, tbStruct );
+
+        variables.graph.addNode( tbId, "TRUST_BOUNDARY", boundaryType, tbStruct );
+        variables.graph.addEdge( arguments.fileNodeId, tbId, "BOUNDED_BY", tbStruct );
+    }
+
+}

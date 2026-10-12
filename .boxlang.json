@@ -1,0 +1,16 @@
+{
+    "mappings": {
+        "/models": "./models",
+        "/agents": "./agents",
+        "/config": "./config",
+        "/target_app": "./target_app",
+        "/tests": "./tests"
+    },
+    "executors": {
+        "chaos-pool": {
+            "name": "chaos-pool",
+            "type": "VIRTUAL",
+            "maxThreads": 50
+        }
+    }
+}

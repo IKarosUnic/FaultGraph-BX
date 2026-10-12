@@ -1,0 +1,84 @@
+/**
+ * PerformanceResourceTest - Suite B8: Rendimiento y consumo de recursos.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testChaosEngineExecutionLatency();
+        testDiagnosticMemoryFootprint();
+    }
+
+    private void function testChaosEngineExecutionLatency() {
+        var id = "TC-B8-01";
+        var scenario = "Medicion del tiempo de ejecucion de la bateria completa de caos (8 escenarios)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var originalFactory = function( sc, gw ) {
+                return new target_app.PaymentService( sc, gw );
+            };
+            var chaos = new models.ChaosEngine( originalFactory, cfg.getTargetServiceConfig(), "PerfTest" );
+            var res = chaos.runAll();
+
+            var totalMs = getTickCount() - t0;
+            // 8 escenarios con sleep(150) en timeout deben tomar aproximadamente ~700-1500 ms
+            variables.assert.isTrue( totalMs < 5000, "La bateria de caos debe completar en menos de 5000 ms" );
+            variables.assert.isEqual( 8, res.total );
+
+            variables.reporter.record( id, scenario, "chaos.runAll() (8 escenarios)", "Completar en < 5000 ms", "Completado en " & totalMs & " ms (medido en chaos: " & res.durationMs & " ms)", "PASS", totalMs );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "chaos.runAll()", "< 5000 ms", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testDiagnosticMemoryFootprint() {
+        var id = "TC-B8-02";
+        var scenario = "Medicion de la huella de memoria JVM durante el diagnostico e inspeccion";
+        var t0 = getTickCount();
+        try {
+            var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+            rt.gc();
+            var memBefore = rt.totalMemory() - rt.freeMemory();
+
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+            var inspection = healer.inspectSource( cfg.getTargetSourcePath() );
+
+            // Simular reporte con 50 fallos sinteticos
+            var bulkResults = [];
+            for ( var i = 1; i <= 50; i++ ) {
+                arrayAppend( bulkResults, {
+                    "id": "SCN_" & i,
+                    "survived": false,
+                    "errorType": "BoxCastException",
+                    "errorMessage": "Can't cast [2.5%] to a Number",
+                    "errorDetail": "",
+                    "errorLine": 60,
+                    "errorTemplate": "PaymentService.bx",
+                    "gatewayMode": "timeout",
+                    "configMutation": "none",
+                    "faultHint": "NUMERIC_CONTENT"
+                } );
+            }
+            var diag = healer.diagnose( { "results": bulkResults }, inspection );
+
+            var memAfter = rt.totalMemory() - rt.freeMemory();
+            var diffMb   = round( ( ( memAfter - memBefore ) / ( 1024 * 1024 ) ) * 100 ) / 100;
+
+            // La inferencia de 50 fallos no debe consumir mas de 64 MB de memoria heap delta
+            variables.assert.isTrue( diffMb < 64, "El incremento de memoria debe ser < 64 MB" );
+
+            variables.reporter.record( id, scenario, "diagnose() sobre 50 eventos de fallo", "Delta de memoria JVM < 64 MB", "Delta observado: " & diffMb & " MB (Heap total: " & round( ( memAfter / ( 1024 * 1024 ) ) * 10 ) / 10 & " MB)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Consumo de memoria", "< 64 MB", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

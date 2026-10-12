@@ -1,0 +1,169 @@
+/**
+ * DiagnosticEvaluator - Evaluador formal de diagnosticos sobre 30 casos sinteticos (Fase C).
+ * Mide metricas reales sin inventar porcentajes ni enmascarar limitaciones.
+ */
+class {
+
+    public any function init( required string rootDir ) {
+        variables.rootDir = arguments.rootDir;
+        return this;
+    }
+
+    public struct function evaluateAll() {
+        var catalog = new tests.benchmarks.SyntheticCasesCatalog();
+        var cases   = catalog.getCases();
+        var cfg     = new config.Config( variables.rootDir );
+        var healer  = new models.Healer( cfg );
+
+        var t0 = getTickCount();
+        var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+        rt.gc();
+        var memBefore = rt.totalMemory() - rt.freeMemory();
+
+        var top1Matches            = 0;
+        var top3Matches            = 0;
+        var unsubstantiatedCount   = 0;
+        var abstentionsOnMissing   = 0;
+        var missingDataTotal       = 0;
+        var falsePositives         = 0;
+        var falseNegatives         = 0;
+        var caseDetails            = [];
+
+        for ( var item in cases ) {
+            var caseReport = { "results": [ item.outcome ] };
+            var diag = healer.diagnose( caseReport );
+
+            var actualCauses = [];
+            for ( var c in diag.causes ) {
+                arrayAppend( actualCauses, c.code );
+            }
+
+            var top1 = arrayLen( actualCauses ) > 0 ? actualCauses[ 1 ] : "NONE";
+            var top3Found = false;
+            for ( var i = 1; i <= min( 3, arrayLen( actualCauses ) ); i++ ) {
+                if ( actualCauses[ i ] == item.groundTruth ) {
+                    top3Found = true;
+                    break;
+                }
+            }
+
+            var isTop1Match = ( top1 == item.groundTruth );
+            if ( isTop1Match ) {
+                top1Matches = top1Matches + 1;
+            }
+            if ( top3Found ) {
+                top3Matches = top3Matches + 1;
+            }
+
+            // Hipotesis sin evidencia: causas generadas que no coinciden ni con ground truth ni con UNCLASSIFIED
+            if ( !isTop1Match && top1 != "UNCLASSIFIED" && top1 != "NONE" ) {
+                unsubstantiatedCount = unsubstantiatedCount + 1;
+            }
+
+            // Capacidad de abstencion ante datos insuficientes (Familia 5)
+            if ( item.family == "INSUFFICIENT_DATA" ) {
+                missingDataTotal = missingDataTotal + 1;
+                // El sistema actual no tiene estado formal ABSTAIN/INSUFFICIENT_DATA;
+                // si clasifica como causa conocida con datos vacios, es un falso positivo.
+                if ( top1 == "INSUFFICIENT_DATA" ) {
+                    abstentionsOnMissing = abstentionsOnMissing + 1;
+                } else if ( top1 != "UNCLASSIFIED" && top1 != "NONE" ) {
+                    falsePositives = falsePositives + 1;
+                }
+            }
+
+            // Falsos negativos: habiendo un ground truth identificable en familias 1-4, el motor no lo detecto
+            if ( ( item.family == "NULL_OR_MISSING" || item.family == "NUMERIC_CASTING" || item.family == "INFRASTRUCTURE" ) && !isTop1Match ) {
+                falseNegatives = falseNegatives + 1;
+            }
+
+            arrayAppend( caseDetails, {
+                "id"          : item.id,
+                "family"      : item.family,
+                "title"       : item.title,
+                "groundTruth" : item.groundTruth,
+                "diagnosed"   : top1,
+                "top1Match"   : isTop1Match,
+                "top3Found"   : top3Found,
+                "allCauses"   : actualCauses
+            } );
+        }
+
+        var durationMs = getTickCount() - t0;
+        var memAfter   = rt.totalMemory() - rt.freeMemory();
+        var memDeltaMb = round( ( ( memAfter - memBefore ) / ( 1024 * 1024 ) ) * 100 ) / 100;
+
+        // Consistencia: ejecutar 5 repeticiones del caso C01 y verificar si la salida varia
+        var consistencyRuns = [];
+        var identicalRuns   = 0;
+        var firstRunDiag    = "";
+        for ( var r = 1; r <= 5; r++ ) {
+            var rDiag = healer.diagnose( { "results": [ cases[ 1 ].outcome ] } );
+            var rCode = arrayLen( rDiag.causes ) > 0 ? rDiag.causes[ 1 ].code : "NONE";
+            arrayAppend( consistencyRuns, rCode );
+            if ( r == 1 ) {
+                firstRunDiag = rCode;
+                identicalRuns = identicalRuns + 1;
+            } else if ( rCode == firstRunDiag ) {
+                identicalRuns = identicalRuns + 1;
+            }
+        }
+
+        var totalCases = arrayLen( cases );
+        var top1Pct    = round( ( top1Matches / totalCases ) * 1000 ) / 10;
+        var top3Pct    = round( ( top3Matches / totalCases ) * 1000 ) / 10;
+        var abstainPct = missingDataTotal > 0 ? ( round( ( abstentionsOnMissing / missingDataTotal ) * 1000 ) / 10 ) : 0;
+        var consistPct = round( ( identicalRuns / 5 ) * 1000 ) / 10;
+
+        return {
+            "totalCases"             : totalCases,
+            "top1Matches"            : top1Matches,
+            "top1AccuracyPct"        : top1Pct,
+            "top3Matches"            : top3Matches,
+            "top3PresencePct"        : top3Pct,
+            "unsubstantiatedHypotheses": unsubstantiatedCount,
+            "missingDataCases"       : missingDataTotal,
+            "abstentionsOnMissing"   : abstentionsOnMissing,
+            "abstentionRatePct"      : abstainPct,
+            "falsePositives"         : falsePositives,
+            "falseNegatives"         : falseNegatives,
+            "consistencyRuns"        : 5,
+            "identicalConsistencyRuns": identicalRuns,
+            "consistencyPct"         : consistPct,
+            "durationMs"             : durationMs,
+            "memoryDeltaMb"          : memDeltaMb,
+            "modelApiCalls"          : 0, // Determinista offline
+            "cases"                  : caseDetails
+        };
+    }
+
+    public void function printReport( required struct metrics ) {
+        println( "============================================================" );
+        println( "     FAULTGRAPH-BX :: EVALUACION DE DIAGNOSTICO (FASE C)    " );
+        println( "============================================================" );
+        println( "Total casos evaluados       : " & metrics.totalCases );
+        println( "Top-1 Accuracy (Exactitud)  : " & metrics.top1Matches & "/" & metrics.totalCases & " (" & metrics.top1AccuracyPct & " %)" );
+        println( "Top-3 Presence (Presencia)  : " & metrics.top3Matches & "/" & metrics.totalCases & " (" & metrics.top3PresencePct & " %)" );
+        println( "Hipotesis sin evidencia     : " & metrics.unsubstantiatedHypotheses );
+        println( "Abstencion ante datos vacios: " & metrics.abstentionsOnMissing & "/" & metrics.missingDataCases & " (" & metrics.abstentionRatePct & " %)" );
+        println( "Falsos Positivos            : " & metrics.falsePositives );
+        println( "Falsos Negativos            : " & metrics.falseNegatives );
+        println( "Consistencia (5 repeticiones): " & metrics.identicalConsistencyRuns & "/5 (" & metrics.consistencyPct & " %)" );
+        println( "Tiempo de evaluacion        : " & metrics.durationMs & " ms" );
+        println( "Delta memoria JVM           : " & metrics.memoryDeltaMb & " MB" );
+        println( "Llamadas a modelo LLM       : " & metrics.modelApiCalls & " (100% determinista offline)" );
+        println( "------------------------------------------------------------" );
+        println( "DESGLOSE POR FAMILIAS:" );
+        var currentFamily = "";
+        for ( var c in metrics.cases ) {
+            if ( c.family != currentFamily ) {
+                currentFamily = c.family;
+                println( " [Familia: " & currentFamily & "]" );
+            }
+            var tag = c.top1Match ? "[ACIERTO]" : "[DESVIO ]";
+            println( "   " & tag & " " & c.id & " | GT: " & rjustify( c.groundTruth, 22 ) & " -> Diagnostico: " & c.diagnosed );
+        }
+        println( "============================================================" );
+    }
+
+}

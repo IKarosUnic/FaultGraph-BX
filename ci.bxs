@@ -1,0 +1,174 @@
+/**
+ * ci.bxs - Runner de Integracion Continua (CI/CD) para FaultGraph-BX.
+ *
+ * Disenado para ejecutarse en GitHub Actions, GitLab CI, Azure DevOps o pre-commit hooks.
+ *   - Escanea el repositorio con RepositoryScanner.bx.
+ *   - Exporta los hallazgos al estandar OASIS SARIF v2.1.0 (SarifExporter.bx).
+ *   - Publica el resumen en $GITHUB_STEP_SUMMARY si se ejecuta en GitHub Actions.
+ *   - Retorna codigo de salida 0 (limpio) o 1 (fallos que superan el umbral).
+ *
+ * Uso:
+ *   boxlang ci.bxs
+ *   boxlang ci.bxs --target target_app/ --output reports/faultgraph.sarif --fail-on HIGH
+ */
+rootDir   = getDirectoryFromPath( getCurrentTemplatePath() );
+configObj = new config.Config( rootDir );
+scanner   = new models.RepositoryScanner( configObj );
+exporter  = new models.SarifExporter();
+
+// Extraer argumentos nativos provistos por el BoxRuntime CLI
+import ortus.boxlang.runtime.BoxRuntime;
+rawCliArgs = BoxRuntime.getInstance().getCliOptions().cliArgs() ?: [];
+cliArgs = [];
+for ( i = 1; i <= arrayLen( rawCliArgs ); i++ ) {
+    argVal = rawCliArgs[ i ];
+    if ( i > 1 || !findNoCase( ".bxs", argVal ) ) {
+        arrayAppend( cliArgs, argVal );
+    }
+}
+targetPath = rootDir & "target_app";
+outputPath = rootDir & "reports/faultgraph.sarif";
+failOn     = "HIGH"; // CRITICAL, HIGH, MEDIUM, LOW, NEVER
+useAi      = false;  // Por defecto en CI usar modo determinista ultra-rapido (0 ms coldstart, 0 tokens)
+isPolyglot = false;
+isSynergy  = false;
+
+for ( i = 1; i <= arrayLen( cliArgs ); i++ ) {
+    arg = cliArgs[ i ];
+    if ( arg == "--target" && i < arrayLen( cliArgs ) ) {
+        targetPath = cliArgs[ i + 1 ];
+        if ( !reFind( "^([a-zA-Z]:|[\\/])", targetPath ) ) {
+            targetPath = rootDir & targetPath;
+        }
+        i++;
+    } else if ( arg == "--output" && i < arrayLen( cliArgs ) ) {
+        outputPath = cliArgs[ i + 1 ];
+        if ( !reFind( "^([a-zA-Z]:|[\\/])", outputPath ) ) {
+            outputPath = rootDir & outputPath;
+        }
+        i++;
+    } else if ( arg == "--fail-on" && i < arrayLen( cliArgs ) ) {
+        failOn = uCase( cliArgs[ i + 1 ] );
+        i++;
+    } else if ( arg == "--ai" ) {
+        useAi = true;
+    } else if ( arg == "--polyglot" || arg == "--all-languages" ) {
+        isPolyglot = true;
+    } else if ( arg == "--synergy" ) {
+        isSynergy = true;
+    }
+}
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: CI/CD CODE SCANNER & SARIF RUNNER    " );
+println( "============================================================" );
+println( "Objetivo      : " & targetPath );
+println( "Modo Auditoria: " & ( useAi ? "Hibrido (Determinista + IA Local)" : "Determinista (Ultra-rapido, 0 tokens)" ) );
+println( "Modo Lenguaje : " & ( isPolyglot ? "Poliglota Multilenguaje (Auto-deteccion)" : "BoxLang Nativo" ) );
+println( "Umbral de Fallo: " & failOn );
+println( "Salida SARIF  : " & outputPath );
+println( "------------------------------------------------------------" );
+
+t0 = getTickCount();
+scanRes = isPolyglot ? scanner.scanPolyglotDirectory( targetPath, useAi ) : scanner.scanDirectory( targetPath, useAi );
+durationMs = getTickCount() - t0;
+
+if ( !scanRes.ok ) {
+    println( "[ERROR] Fallo al ejecutar el escaneo: " & ( scanRes.error ?: "Error desconocido" ) );
+    createObject( "java", "java.lang.System" ).exit( 2 );
+}
+
+println( "Archivos Escaneados : " & scanRes.totalFiles );
+println( "Archivos Limpios    : " & scanRes.cleanFiles );
+println( "Archivos con Fallos : " & scanRes.vulnerableFiles );
+println( "Total de Incidentes : " & scanRes.totalIssues );
+println( "Tiempo de Ejecucion : " & durationMs & " ms" );
+println( "------------------------------------------------------------" );
+
+// Desglose de severidad
+sev = scanRes.summaryBySeverity;
+println( "Severidad: [CRITICAL: " & sev.CRITICAL & " | HIGH: " & sev.HIGH & " | MEDIUM: " & sev.MEDIUM & " | LOW: " & sev.LOW & " | INFO: " & sev.INFO & "]" );
+
+// Exportar SARIF con rutas relativas al repositorio para GitHub Code Scanning
+if ( isSynergy ) {
+    graph = new models.synergy.SharedEvidenceGraph();
+    reconstructor = new models.adversary.AttackSurfaceReconstructor( configObj, graph );
+    surface = reconstructor.reconstruct( targetPath );
+    contract = new models.synergy.CommonContract();
+    canonicalFindings = [];
+
+    for ( f in scanRes.files ) {
+        for ( iss in f.issues ) {
+            findingId = "FINDING-" & iss.code & "-" & hash( f.filePath & ":" & iss.line, "MD5" );
+            evidences = [
+                contract.createEvidence( "LINTER_MATCH", iss.code & "@L" & iss.line, f.filePath, iss.line, iss.evidence, 0.85 )
+            ];
+            cf = contract.createFinding(
+                findingId            = findingId,
+                engineId             = "RepositoryScanner",
+                language             = ( structKeyExists( f, "language" ) ? f.language : "boxlang" ),
+                filePath             = f.filePath,
+                functionName         = "",
+                line                 = iss.line,
+                column               = 1,
+                riskCategory         = "SECURITY_DEFECT",
+                cwe                  = iss.code,
+                severity             = iss.severity,
+                description          = iss.description,
+                technicalExplanation = iss.description,
+                confidence           = ( iss.severity == "CRITICAL" ? 0.95 : 0.85 ),
+                validationStatus     = "STATICALLY_FLAGGED",
+                remediation          = iss.remediation,
+                evidences            = evidences
+            );
+            arrayAppend( canonicalFindings, cf );
+        }
+    }
+    sarifData = contract.toSarif( canonicalFindings );
+    fileWrite( outputPath, jsonSerialize( sarifData ) );
+    println( "[OK] Reporte SARIF Sinergico guardado exitosamente en: " & outputPath );
+    println( "     (Grafo de evidencias: " & surface.entryPointsCount & " endpoints, " & surface.sensitiveOperationsCount & " operaciones sensibles)" );
+} else {
+    sarifData = exporter.exportFromScanner( scanRes, rootDir );
+    exporter.saveToFile( sarifData, outputPath );
+    println( "[OK] Reporte SARIF guardado exitosamente en: " & outputPath );
+}
+
+// Resumen Markdown
+mdSummary = exporter.generateMarkdownSummary( sarifData );
+
+sysEnv = createObject( "java", "java.lang.System" ).getenv();
+githubStepSummary = sysEnv.containsKey( "GITHUB_STEP_SUMMARY" ) ? sysEnv.get( "GITHUB_STEP_SUMMARY" ) : "";
+if ( len( trim( githubStepSummary ) ) > 0 && fileExists( githubStepSummary ) ) {
+    fileAppend( githubStepSummary, mdSummary & char( 10 ) );
+    println( "[OK] Resumen de auditoria adjuntado a $GITHUB_STEP_SUMMARY" );
+}
+
+// Evaluar si se debe romper la build segun el umbral
+shouldFail = false;
+blockingCount = 0;
+
+if ( failOn == "CRITICAL" ) {
+    blockingCount = sev.CRITICAL;
+} else if ( failOn == "HIGH" ) {
+    blockingCount = sev.CRITICAL + sev.HIGH;
+} else if ( failOn == "MEDIUM" ) {
+    blockingCount = sev.CRITICAL + sev.HIGH + sev.MEDIUM;
+} else if ( failOn == "LOW" ) {
+    blockingCount = sev.CRITICAL + sev.HIGH + sev.MEDIUM + sev.LOW;
+}
+
+if ( failOn != "NEVER" && blockingCount > 0 ) {
+    shouldFail = true;
+}
+
+println( "============================================================" );
+if ( shouldFail ) {
+    println( "[BUILD FAILED] Se encontraron " & blockingCount & " defectos que superan el umbral '" & failOn & "'." );
+    println( "Consulte el archivo SARIF o ejecute 'boxlang run.bxs' para auto-reparacion." );
+    println( "============================================================" );
+    createObject( "java", "java.lang.System" ).exit( 1 );
+} else {
+    println( "[BUILD SUCCESS] Verificacion completada. El codigo cumple con los estandares de calidad." );
+    println( "============================================================" );
+}

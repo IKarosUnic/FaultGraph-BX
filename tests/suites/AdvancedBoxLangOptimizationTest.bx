@@ -1,0 +1,212 @@
+/**
+ * AdvancedBoxLangOptimizationTest - Suite B10: Optimizaciones Avanzadas de BoxLang y JVM.
+ *
+ * Cubre:
+ *   - TC-B10-01: Concurrencia masiva asincrona en ChaosEngine con BoxLang runAsync().
+ *   - TC-B10-02: Cache semantica L1 en memoria (ConcurrentHashMap): medicion de hits, misses y O(1).
+ *   - TC-B10-03: Integracion de SemanticCache en Healer: aceleracion de inspecciones estaticas.
+ *   - TC-B10-04: Bus de eventos e interceptores nativo: registro, emision y resiliencia ante errores.
+ *   - TC-B10-05: Integracion end-to-end de EventBus en IncidentDirector: emision de eventos de ciclo de vida.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testAsyncParallelChaosEngine();
+        testSemanticCacheOperations();
+        testHealerUsesSemanticCache();
+        testEventBusPubSubAndErrorResilience();
+        testIncidentDirectorEventBusLifecycle();
+    }
+
+    private void function testAsyncParallelChaosEngine() {
+        var id = "TC-B10-01";
+        var scenario = "Concurrencia masiva asincrona en ChaosEngine con BoxLang runAsync()";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var serviceFactory = function( c, g ) {
+                return new target_app.PaymentService( c, g );
+            };
+
+            var chaos = new models.ChaosEngine( serviceFactory, cfg.getTargetServiceConfig() );
+
+            // Ejecucion concurrente paralela
+            var parallelResult = chaos.runAll( true );
+
+            variables.assert.isEqual( 8, parallelResult.total );
+            variables.assert.isEqual( "BoxLang-AsyncParallel", parallelResult.threadModel );
+            variables.assert.isTrue( isArray( parallelResult.results ) );
+            variables.assert.isEqual( 8, arrayLen( parallelResult.results ) );
+
+            // Preservacion de orden determinista de IDs
+            variables.assert.isEqual( "S00_HEALTHY_CONTROL", parallelResult.results[ 1 ].id );
+            variables.assert.isEqual( "S07_FALLBACK_CONFIG_WRONG_TYPE", parallelResult.results[ 8 ].id );
+
+            variables.reporter.record( id, scenario, "runAll(parallel=true) con 8 escenarios", "BoxLang-AsyncParallel con 8 resultados ordenados", "Concurrencia asincrona validada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Concurrencia paralela de caos", "Ejecucion concurrente", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSemanticCacheOperations() {
+        var id = "TC-B10-02";
+        var scenario = "Cache semantica L1 en memoria (ConcurrentHashMap): medicion de hits, misses y O(1)";
+        var t0 = getTickCount();
+        try {
+            var cache = new models.SemanticCache();
+
+            variables.assert.isEqual( 0, cache.size() );
+            variables.assert.isFalse( cache.has( "test_key" ) );
+
+            // Miss
+            var val1 = cache.get( "test_key" );
+            variables.assert.isNullVal( val1 );
+
+            // Put y Hit
+            cache.put( "test_key", { "data": 42 } );
+            variables.assert.isTrue( cache.has( "test_key" ) );
+            var val2 = cache.get( "test_key" );
+            variables.assert.isEqual( 42, val2.data );
+
+            var stats = cache.getStats();
+            variables.assert.isEqual( 1, stats.hits );
+            variables.assert.isEqual( 1, stats.misses );
+            variables.assert.isEqual( 1, stats.size );
+            variables.assert.isEqual( 50, stats.hitRatio );
+
+            variables.reporter.record( id, scenario, "Operaciones basicas de SemanticCache", "Hits=1, Misses=1, Size=1", "Operaciones L1 validadas", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "SemanticCache basico", "Operaciones concurrentes", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testHealerUsesSemanticCache() {
+        var id = "TC-B10-03";
+        var scenario = "Integracion de SemanticCache en Healer: aceleracion de inspecciones estaticas";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var cache  = new models.SemanticCache();
+            var healer = new models.Healer( cfg, null, null, cache );
+
+            var path = cfg.getTargetSourcePath();
+
+            // Primera inspeccion (Cache Miss -> I/O disco)
+            var insp1 = healer.inspectSource( path );
+            var statsAfterFirst = cache.getStats();
+            variables.assert.isTrue( insp1.exists );
+            variables.assert.isEqual( 1, statsAfterFirst.size );
+
+            // Segunda inspeccion (Cache Hit -> O(1) memoria)
+            var insp2 = healer.inspectSource( path );
+            var statsAfterSecond = cache.getStats();
+
+            variables.assert.isEqual( insp1.lineCount, insp2.lineCount );
+            variables.assert.isEqual( 1, statsAfterSecond.hits );
+
+            variables.reporter.record( id, scenario, "2 inspecciones consecutivas con SemanticCache", "Primera computa; segunda da Hit sin I/O", "Aceleracion de inspeccion estatica verificada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Cache en Healer", "Cache Hit en segunda inspeccion", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testEventBusPubSubAndErrorResilience() {
+        var id = "TC-B10-04";
+        var scenario = "Bus de eventos e interceptores nativo: registro, emision y resiliencia ante errores";
+        var t0 = getTickCount();
+        try {
+            var bus = new models.EventBus();
+
+            var counter = { "called": 0 };
+            bus.on( "onCustomEvent", function( p ) {
+                counter.called = counter.called + p.inc;
+            } );
+
+            // Interceptor con error simulado para probar resiliencia
+            bus.on( "onCustomEvent", function( p ) {
+                throw( type = "FaultyListener", message = "Fallo simulado en listener" );
+            } );
+
+            variables.assert.isEqual( 2, bus.countListeners( "onCustomEvent" ) );
+
+            // Emitir evento
+            bus.emit( "onCustomEvent", { "inc": 5 } );
+
+            variables.assert.isEqual( 5, counter.called );
+            var history = bus.getHistory();
+            variables.assert.isEqual( 1, arrayLen( history ) );
+            variables.assert.isEqual( "onCustomEvent", history[ 1 ].event );
+            variables.assert.isEqual( 1, history[ 1 ].handledBy );
+            variables.assert.stringContains( "Fallo simulado", history[ 1 ].listenerError );
+
+            variables.reporter.record( id, scenario, "Emit evento con 2 listeners (uno exitoso, uno con error)", "Listener util ejecutado y error contenido en log", "Resiliencia y desacoplamiento de EventBus confirmados", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "EventBus pub/sub", "Ejecucion resiliente", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testIncidentDirectorEventBusLifecycle() {
+        var id = "TC-B10-05";
+        var scenario = "Integracion end-to-end de EventBus en IncidentDirector: emision de eventos de ciclo de vida";
+        var t0 = getTickCount();
+        try {
+            var cfg     = new config.Config( variables.rootDir );
+            var healer  = new models.Healer( cfg );
+            var bus     = new models.EventBus();
+
+            var capturedEvents = [];
+            bus.on( "onIncidentStart", function( p ) { arrayAppend( capturedEvents, "onIncidentStart" ); } );
+            bus.on( "onStaticInspection", function( p ) { arrayAppend( capturedEvents, "onStaticInspection" ); } );
+            bus.on( "onChaosCompleted", function( p ) { arrayAppend( capturedEvents, "onChaosCompleted" ); } );
+            bus.on( "onDiagnosisCompleted", function( p ) { arrayAppend( capturedEvents, "onDiagnosisCompleted" ); } );
+            bus.on( "onPatchGenerated", function( p ) { arrayAppend( capturedEvents, "onPatchGenerated" ); } );
+            bus.on( "onVerificationCompleted", function( p ) { arrayAppend( capturedEvents, "onVerificationCompleted" ); } );
+            bus.on( "onIncidentResolved", function( p ) { arrayAppend( capturedEvents, "onIncidentResolved" ); } );
+
+            // Simulacion ligera de ChaosEngine
+            var mockChaos = {
+                "getScenarios": function() { return [ { id: "S01", gatewayMode: "timeout", configMutation: "none", amount: 100, title: "T" } ]; },
+                "getScenario": function( id ) { return { id: id, gatewayMode: "timeout", configMutation: "none", amount: 100, title: "T" }; },
+                "runScenario": function( sc ) { return { id: sc.id, scenarioId: sc.id, survived: false, errorType: "BoxCastException", errorMessage: "Can't cast", errorDetail: "Can't cast", errorLine: "60", errorTemplate: "PaymentService.bx", durationMs: 1 }; },
+                "runAll": function( p = false ) {
+                    return {
+                        label: "test", total: 1, survived: 0, failed: 1, durationMs: 2,
+                        results: [ { id: "S01", scenarioId: "S01", survived: false, errorType: "BoxCastException", errorMessage: "Can't cast [2.5%]", errorDetail: "Can't cast [2.5%]", errorLine: "60", errorTemplate: "PaymentService.bx", durationMs: 1 } ]
+                    };
+                }
+            };
+
+            var mockVerifyFactory = function() {
+                return {
+                    "runAll": function( p = false ) {
+                        return { label: "verify", total: 1, survived: 1, failed: 0, durationMs: 1, results: [ { id: "S01", survived: true } ] };
+                    }
+                };
+            };
+
+            var director = new agents.IncidentDirector( cfg, healer, mockChaos, mockVerifyFactory, bus );
+            var summary  = director.run();
+
+            variables.assert.isTrue( isArray( capturedEvents ) );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onIncidentStart" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onStaticInspection" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onChaosCompleted" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onDiagnosisCompleted" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onPatchGenerated" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onVerificationCompleted" ) > 0 );
+            variables.assert.isTrue( arrayFind( capturedEvents, "onIncidentResolved" ) > 0 );
+
+            variables.reporter.record( id, scenario, "Ciclo completo de IncidentDirector con EventBus inyectado", "Todos los 7 eventos de ciclo de vida capturados", "Orquestacion reactiva por eventos confirmada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Lifecycle EventBus", "7 eventos emitidos", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

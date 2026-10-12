@@ -1,0 +1,180 @@
+/**
+ * DiagnosticVerificationEngineTest - Banco de pruebas para el Motor Formal de 9 Pasos.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testEngineInstantiation();
+        testPipelineExecutionSteps1To3();
+        testPipelineKnowledgeConsultation();
+        testPipelinePatchSynthesisAndSafety();
+        testPipelineFullVerificationAndLearning();
+    }
+
+    private void function testEngineInstantiation() {
+        var id = "TC-DV-01";
+        var scenario = "Instanciacion del Motor Formal de Diagnostico y Verificacion en 9 Pasos";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.DiagnosticVerificationEngine( cfg );
+
+            variables.assert.isNotNull( engine );
+            variables.reporter.record( id, scenario, "Instanciacion del motor formal", "Instancia creada con todas sus dependencias", "Motor en 9 pasos inicializado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Instanciacion", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testPipelineExecutionSteps1To3() {
+        var id = "TC-DV-02";
+        var scenario = "Pipeline: Pasos 1 (Evidencia), 2 (Reproduccion) y 3 (Hipotesis)";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+            var chaos  = new models.ChaosEngine(
+                function( c, g ) { return new target_app.PaymentService( c, g ); },
+                cfg.getTargetServiceConfig()
+            );
+            var verifyFactory = function() {
+                return new models.ChaosEngine(
+                    function( c, g ) { return new target_app.PaymentServicePatched( c, g ); },
+                    cfg.getTargetServiceConfig()
+                );
+            };
+
+            var engine = new models.DiagnosticVerificationEngine( cfg, healer );
+            var report = engine.executePipeline( cfg.getTargetSourcePath(), chaos, verifyFactory );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step1_evidence" ) );
+            variables.assert.isTrue( report.steps.step1_evidence.exists );
+            variables.assert.isTrue( report.steps.step1_evidence.findingsCount > 0 );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step2_reproduction" ) );
+            variables.assert.isTrue( report.steps.step2_reproduction.reproduced );
+            variables.assert.isTrue( report.steps.step2_reproduction.failed > 0 );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step3_hypotheses" ) );
+            variables.assert.isTrue( report.steps.step3_hypotheses.causesCount >= 2 );
+
+            variables.reporter.record( id, scenario, "Pasos 1 a 3 del protocolo formal", "Evidencia, Reproduccion e Hipotesis confirmadas", "Primeros 3 pasos verificados", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Pasos 1-3", "Completos", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testPipelineKnowledgeConsultation() {
+        var id = "TC-DV-03";
+        var scenario = "Pipeline: Paso 4 (Consulta a Base de Conocimiento) y Paso 5 (Contraste)";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var kb     = new models.KnowledgeBase( cfg );
+            var chaos  = new models.ChaosEngine(
+                function( c, g ) { return new target_app.PaymentService( c, g ); },
+                cfg.getTargetServiceConfig()
+            );
+            var verifyFactory = function() {
+                return new models.ChaosEngine(
+                    function( c, g ) { return new target_app.PaymentServicePatched( c, g ); },
+                    cfg.getTargetServiceConfig()
+                );
+            };
+
+            var engine = new models.DiagnosticVerificationEngine( cfg, null, kb );
+            var report = engine.executePipeline( cfg.getTargetSourcePath(), chaos, verifyFactory );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step4_knowledge" ) );
+            variables.assert.isTrue( report.steps.step4_knowledge.matchedCount > 0, "Debe correlacionar causas con entradas de conocimiento" );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step5_contrast" ) );
+            variables.assert.isTrue( report.steps.step5_contrast.review.rulesCrossChecked >= 2 );
+
+            variables.reporter.record( id, scenario, "Pasos 4 y 5: Conocimiento y Contraste", "Correlacion con base de conocimiento verificada", "Contraste cruzado formal exitoso", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Pasos 4-5", "Conocimiento y contraste", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testPipelinePatchSynthesisAndSafety() {
+        var id = "TC-DV-04";
+        var scenario = "Pipeline: Paso 6 (Parche Justificado con chequeo independiente de seguridad)";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var chaos  = new models.ChaosEngine(
+                function( c, g ) { return new target_app.PaymentService( c, g ); },
+                cfg.getTargetServiceConfig()
+            );
+            var verifyFactory = function() {
+                return new models.ChaosEngine(
+                    function( c, g ) { return new target_app.PaymentServicePatched( c, g ); },
+                    cfg.getTargetServiceConfig()
+                );
+            };
+
+            var engine = new models.DiagnosticVerificationEngine( cfg );
+            var report = engine.executePipeline( cfg.getTargetSourcePath(), chaos, verifyFactory );
+
+            variables.assert.isTrue( structKeyExists( report.steps, "step6_patch" ) );
+            variables.assert.isTrue( report.steps.step6_patch.ok );
+            variables.assert.isTrue( report.steps.step6_patch.safetyCheck.safe, "El parche debe ser certificado como seguro sin patrones peligrosos" );
+            variables.assert.isTrue( report.steps.step6_patch.fixesCount >= 2 );
+
+            variables.reporter.record( id, scenario, "Paso 6: Parche y Seguridad", "Parche defensivo certificado como seguro", "Chequeo independiente de seguridad superado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Paso 6", "Parche seguro", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testPipelineFullVerificationAndLearning() {
+        var id = "TC-DV-05";
+        var scenario = "Pipeline: Pasos 7 a 9 (Verificacion 100%, evaluacion de impacto y auto-aprendizaje)";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var kb     = new models.KnowledgeBase( cfg );
+            var chaos  = new models.ChaosEngine(
+                function( c, g ) { return new target_app.PaymentService( c, g ); },
+                cfg.getTargetServiceConfig()
+            );
+            var verifyFactory = function() {
+                return new models.ChaosEngine(
+                    function( c, g ) { return new target_app.PaymentServicePatched( c, g ); },
+                    cfg.getTargetServiceConfig()
+                );
+            };
+
+            var engine = new models.DiagnosticVerificationEngine( cfg, null, kb );
+            var report = engine.executePipeline( cfg.getTargetSourcePath(), chaos, verifyFactory );
+
+            variables.assert.isTrue( report.verified, "El pipeline completo debe verificar el parche" );
+            variables.assert.isEqual( "VERIFIED_RESOLVED", report.status );
+
+            // Paso 7: Pruebas bajo el mismo caos
+            variables.assert.isTrue( structKeyExists( report.steps, "step7_testing" ) );
+            variables.assert.isEqual( 0, report.steps.step7_testing.failed );
+
+            // Paso 8: Rendimiento
+            variables.assert.isTrue( structKeyExists( report.steps, "step8_sideEffects" ) );
+            variables.assert.isTrue( report.steps.step8_sideEffects.contractStable );
+
+            // Paso 9: Auto-aprendizaje en la base de conocimiento
+            variables.assert.isTrue( structKeyExists( report.steps, "step9_documentation" ) );
+            variables.assert.isTrue( len( report.steps.step9_documentation.historyRecordId ) > 0, "Debe generar registro en el historial de la KB" );
+
+            variables.reporter.record( id, scenario, "Ciclo completo de 9 pasos", "100% verificado y aprendizaje registrado en KB", "Pipeline formal de 9 pasos completado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Pipeline completo", "9 pasos", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

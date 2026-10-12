@@ -1,0 +1,76 @@
+/**
+ * TestReporter - Registra resultados de pruebas estructurados para BoxLang.
+ * Cada prueba reporta: id, scenario, input, expected, observed y status.
+ */
+class {
+
+    public any function init( string suiteName = "TestSuite" ) {
+        variables.suiteName = arguments.suiteName;
+        variables.tests     = [];
+        variables.startTime = getTickCount();
+        return this;
+    }
+
+    public void function record(
+        required string id,
+        required string scenario,
+        required any input,
+        required any expected,
+        required any observed,
+        required string status,
+        numeric durationMs = 0,
+        string errorDetails = ""
+    ) {
+        arrayAppend( variables.tests, {
+            "id"           : arguments.id,
+            "scenario"     : arguments.scenario,
+            "input"        : arguments.input,
+            "expected"     : arguments.expected,
+            "observed"     : arguments.observed,
+            "status"       : arguments.status, // PASS | FAIL
+            "durationMs"   : arguments.durationMs,
+            "errorDetails" : arguments.errorDetails
+        } );
+    }
+
+    public struct function getSummary() {
+        var passed = 0;
+        var failed = 0;
+        for ( var t in variables.tests ) {
+            if ( t.status == "PASS" ) {
+                passed = passed + 1;
+            } else {
+                failed = failed + 1;
+            }
+        }
+        return {
+            "suiteName"  : variables.suiteName,
+            "total"      : arrayLen( variables.tests ),
+            "passed"     : passed,
+            "failed"     : failed,
+            "durationMs" : getTickCount() - variables.startTime,
+            "tests"      : variables.tests
+        };
+    }
+
+    public void function printConsole() {
+        var summary = getSummary();
+        println( "------------------------------------------------------------" );
+        println( "SUITE: " & summary.suiteName & " (" & summary.passed & "/" & summary.total & " pasaron, " & summary.failed & " fallaron en " & summary.durationMs & " ms)" );
+        println( "------------------------------------------------------------" );
+        for ( var t in summary.tests ) {
+            var tag = ( t.status == "PASS" ) ? "[PASS]" : "[FAIL]";
+            println( " " & tag & " " & rjustify( t.id, 12 ) & " | " & t.scenario );
+            if ( t.status != "PASS" ) {
+                println( "       Entrada   : " & toString( t.input ) );
+                println( "       Esperado  : " & toString( t.expected ) );
+                println( "       Observado : " & toString( t.observed ) );
+                if ( len( t.errorDetails ) ) {
+                    println( "       Detalle   : " & t.errorDetails );
+                }
+            }
+        }
+        println( "" );
+    }
+
+}

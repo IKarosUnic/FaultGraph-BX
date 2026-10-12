@@ -1,0 +1,69 @@
+/**
+ * compile.bxs - Precompilacion AOT (Ahead-of-Time) de Bytecode en BoxLang.
+ *
+ * Invoca directamente la clase BXCompiler en la JVM para compilar todos los scripts
+ * y componentes a bytecode nativo, eliminando el cold-start y verificando integridad sintactica.
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+println( "============================================================" );
+println( "   FAULTGRAPH-BX :: PRECOMPILACION AOT (BYTECODE JVM)       " );
+println( "============================================================" );
+println( "Directorio fuente  : " & rootDir );
+targetDir = rootDir & "build/compiled";
+println( "Directorio destino : " & targetDir );
+
+// Limpiar build previo si existe para evitar recursion
+if ( directoryExists( targetDir ) ) {
+    directoryDelete( targetDir, true );
+}
+directoryCreate( targetDir, true );
+
+t0 = getTickCount();
+
+import ortus.boxlang.compiler.BXCompiler;
+import ortus.boxlang.runtime.BoxRuntime;
+import java.nio.file.Paths;
+
+rt = BoxRuntime.getInstance();
+files = directoryList( rootDir, true, "path", "*.bx|*.bxs" );
+normRoot = replace( rootDir, "\", "/", "all" );
+compiledCount = 0;
+failedCount   = 0;
+
+for ( f in files ) {
+    fNorm = replace( f, "\", "/", "all" );
+    rel = replace( fNorm, normRoot, "" );
+    
+    // Ignorar artefactos compilados, reportes, scratch y fixtures intencionalmente malformados
+    if ( findNoCase( "build/", rel ) || findNoCase( "reports/", rel ) || findNoCase( "scratch/", rel ) || findNoCase( "malformed_", rel ) ) {
+        continue;
+    }
+    
+    sourceP = Paths.get( f );
+    destP   = Paths.get( targetDir & "/" & rel );
+    
+    parentDir = getDirectoryFromPath( targetDir & "/" & rel );
+    if ( !directoryExists( parentDir ) ) {
+        directoryCreate( parentDir, true );
+    }
+    
+    ok = BXCompiler.compileFile( sourceP, destP, true, rt );
+    if ( ok ) {
+        compiledCount++;
+    } else {
+        failedCount++;
+        throw( type = "CompilationFailedException", message = "La compilacion AOT fallo en el archivo: " & rel );
+    }
+}
+duration = getTickCount() - t0;
+
+println( "------------------------------------------------------------" );
+println( "  ESTADO COMPILACION   : EXITOSA (0 errores)" );
+println( "  Tiempo total         : " & duration & " ms" );
+println( "  Ventaja arquitectonica: 0 cold-start latency y verificacion total de bytecode" );
+println( "============================================================" );

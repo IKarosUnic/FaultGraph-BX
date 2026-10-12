@@ -1,0 +1,459 @@
+/**
+ * VectorStore.bx - Memoria Episodica Vectorial e Indexador Semantico Nativo de BoxLang.
+ *
+ * Inspirado en los principios arquitectonicos de TurboVec y bases de datos vectoriales
+ * compactas (SimHash, Feature Hashing, L2-Normalizacion y Cuantizacion Escalar Int8):
+ *
+ *   1. Vectorizacion Semantica Determinista:
+ *      Proyecta tokens de texto y n-gramas de caracteres en un espacio denso de D dimensiones
+ *      (por defecto D = 64) mediante hash polinomial determinista y ponderacion de signos.
+ *      Garantiza 0 dependencias externas y 0 consumo de tokens de red.
+ *
+ *   2. Cuantizacion Escalar Int8 (Turbo Quantization):
+ *      Comprime vectores continuos de 32/64-bit flotantes a enteros con signo [-127, 127],
+ *      reduciendo la huella de memoria en un 75% y acelerando el producto punto en la JVM.
+ *
+ *   3. Memoria Episodica de Incidentes:
+ *      Almacena huellas de errores pasados, causas diagnosticadas y soluciones aplicadas.
+ *      Permite busquedas semanticas k-NN (k-Nearest Neighbors) por similitud de coseno
+ *      para recuperar diagnosticos y parches historicos instantaneamente.
+ */
+class {
+
+    property name="dimensions" type="numeric" default="64";
+    property name="useQuantization" type="boolean" default="true";
+    property name="storagePath" type="string" default="";
+    property name="ollamaEmbeddingEndpoint" type="string" default="http://localhost:11434/api/embeddings";
+    property name="ollamaEmbeddingModel" type="string" default="nomic-embed-text";
+    property name="enableOllamaEmbeddings" type="boolean" default="false";
+
+    /**
+     * Constructor
+     *
+     * @dimensions Dimensiones del espacio vectorial (default 64)
+     * @useQuantization Habilitar cuantizacion int8 estilo TurboVec
+     * @storagePath Ruta opcional para persistencia JSON de la memoria
+     */
+    public any function init(
+        numeric dimensions = 64,
+        boolean useQuantization = true,
+        string storagePath = "",
+        boolean enableOllamaEmbeddings = false,
+        string ollamaEmbeddingEndpoint = "http://localhost:11434/api/embeddings",
+        string ollamaEmbeddingModel = "nomic-embed-text"
+    ) {
+        variables.dimensions              = arguments.dimensions;
+        variables.useQuantization         = arguments.useQuantization;
+        variables.storagePath             = arguments.storagePath;
+        variables.enableOllamaEmbeddings  = arguments.enableOllamaEmbeddings;
+        variables.ollamaEmbeddingEndpoint = arguments.ollamaEmbeddingEndpoint;
+        variables.ollamaEmbeddingModel    = arguments.ollamaEmbeddingModel;
+        variables.documents               = [];
+
+        if ( len( trim( variables.storagePath ) ) ) {
+            if ( !reFind( "^([a-zA-Z]:|[\\/])", variables.storagePath ) ) {
+                variables.storagePath = expandPath( variables.storagePath );
+            }
+            if ( fileExists( variables.storagePath ) ) {
+                loadFromFile( variables.storagePath );
+            }
+        }
+
+        return this;
+    }
+
+    /**
+     * Vectoriza una cadena de texto en un vector denso unitario (L2-norm = 1.0).
+     *
+     * @text Texto a vectorizar (mensajes de error, stack traces, AST)
+     * @return array de floats normalizados de longitud [dimensions]
+     */
+    public array function embedText( required string text ) {
+        var vec = [];
+        for ( var d = 1; d <= variables.dimensions; d++ ) {
+            arrayAppend( vec, 0.0 );
+        }
+
+        var clean = lCase( trim( arguments.text ) );
+        if ( len( clean ) == 0 ) {
+            return vec;
+        }
+
+        var tokens = reMatch( "[\w\.-]+", clean );
+
+        // Ponderacion de tokens lexicos (frecuencia con dispersion de signo)
+        for ( var tok in tokens ) {
+            if ( len( tok ) == 0 ) { continue; }
+            var h = abs( hash( tok ).hashCode() );
+            var bucket = ( h % variables.dimensions ) + 1;
+            var sign = ( ( h \ 7 ) % 2 == 0 ) ? 1.0 : -1.0;
+            vec[ bucket ] = vec[ bucket ] + ( sign * 1.5 );
+        }
+
+        // Ponderacion de n-gramas de caracteres (3-grams para resiliencia ante variaciones ortograficas)
+        var n = len( clean );
+        if ( n >= 3 ) {
+            var maxGrams = min( n - 2, 250 );
+            for ( var i = 1; i <= maxGrams; i++ ) {
+                var gram = mid( clean, i, 3 );
+                var hg = abs( hash( gram ).hashCode() );
+                var bucket = ( hg % variables.dimensions ) + 1;
+                var sign = ( ( hg \ 13 ) % 2 == 0 ) ? 1.0 : -1.0;
+                vec[ bucket ] = vec[ bucket ] + ( sign * 0.5 );
+            }
+        }
+
+        // Normalizacion L2 a vector unitario Euclidiano
+        var sumSq = 0.0;
+        for ( var val in vec ) {
+            sumSq += val * val;
+        }
+
+        if ( sumSq > 0 ) {
+            var norm = sqr( sumSq );
+            for ( var i = 1; i <= variables.dimensions; i++ ) {
+                vec[ i ] = round( ( vec[ i ] / norm ) * 10000 ) / 10000;
+            }
+        }
+
+        return vec;
+    }
+
+    /**
+     * Vectoriza texto utilizando la API de embeddings de Ollama (si esta activa),
+     * degradando transparentemente al algoritmo denso nativo SimHash/Int8 si no hay conexion.
+     */
+    public array function embedWithOllama( required string text, string model = "" ) {
+        if ( len( trim( arguments.text ) ) == 0 ) {
+            return embedText( "" );
+        }
+
+        var targetModel = len( trim( arguments.model ) ) ? arguments.model : variables.ollamaEmbeddingModel;
+
+        try {
+            var urlObj = createObject( "java", "java.net.URI" ).create( variables.ollamaEmbeddingEndpoint ).toURL();
+            var conn = urlObj.openConnection();
+            conn.setRequestMethod( "POST" );
+            conn.setConnectTimeout( 1500 );
+            conn.setReadTimeout( 3000 );
+            conn.setDoOutput( true );
+            conn.setRequestProperty( "Content-Type", "application/json" );
+
+            var payload = jsonSerialize( {
+                "model" : targetModel,
+                "prompt": left( arguments.text, 2000 )
+            } );
+
+            var os = conn.getOutputStream();
+            os.write( payload.getBytes( "UTF-8" ) );
+            os.flush();
+            os.close();
+
+            var code = conn.getResponseCode();
+            if ( code == 200 ) {
+                var stream = conn.getInputStream();
+                var scanner = createObject( "java", "java.util.Scanner" ).init( stream, "UTF-8" ).useDelimiter( "\A" );
+                var bodyText = scanner.hasNext() ? scanner.next() : "";
+                scanner.close();
+
+                var parsed = jsonDeserialize( bodyText );
+                if ( structKeyExists( parsed, "embedding" ) && isArray( parsed.embedding ) && arrayLen( parsed.embedding ) > 0 ) {
+                    return parsed.embedding;
+                }
+            }
+        } catch ( any e ) {
+            // Fallback determinista silencioso (0 tokens, 100% offline)
+        }
+
+        return embedText( arguments.text );
+    }
+
+    /**
+     * Cuantizacion escalar TurboVec Int8: mapea flotantes [-1.0, 1.0] a enteros [-127, 127].
+     *
+     * @floatVector Vector de numeros reales
+     * @return array de enteros cuantizados
+     */
+    public array function quantize( required array floatVector ) {
+        var qVec = [];
+        for ( var f in arguments.floatVector ) {
+            var q = round( f * 127 );
+            if ( q > 127 ) { q = 127; }
+            if ( q < -127 ) { q = -127; }
+            arrayAppend( qVec, q );
+        }
+        return qVec;
+    }
+
+    /**
+     * Agrega o actualiza un documento en la memoria vectorial.
+     *
+     * @id Identificador unico del documento o incidente
+     * @text Contenido textual del incidente o huella de error
+     * @metadata Estructura con metadatos asociados (causas, parches, tags)
+     * @vector Vector de embeddings pre-calculado opcional
+     */
+    public struct function add(
+        required string id,
+        required string text,
+        struct metadata = {},
+        array vector = []
+    ) {
+        var denseVec = ( arrayLen( arguments.vector ) == variables.dimensions ) ? arguments.vector : embedText( arguments.text );
+        var qVec = variables.useQuantization ? quantize( denseVec ) : [];
+
+        var doc = {
+            "id"         : arguments.id,
+            "text"       : arguments.text,
+            "metadata"   : arguments.metadata,
+            "vector"     : denseVec,
+            "quantized"  : qVec,
+            "createdAt"  : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+
+        // Reemplazar si ya existe
+        var foundIdx = 0;
+        for ( var i = 1; i <= arrayLen( variables.documents ); i++ ) {
+            if ( variables.documents[ i ].id == arguments.id ) {
+                foundIdx = i;
+                break;
+            }
+        }
+
+        if ( foundIdx > 0 ) {
+            variables.documents[ foundIdx ] = doc;
+        } else {
+            arrayAppend( variables.documents, doc );
+        }
+
+        return doc;
+    }
+
+    /**
+     * Realiza una busqueda k-NN por similitud de coseno en la memoria vectorial.
+     *
+     * @queryText Texto de consulta
+     * @topK Numero maximo de resultados a retornar
+     * @minSimilarity Umbral minimo de similitud (0.0 a 1.0)
+     * @queryVector Vector de consulta pre-calculado opcional
+     * @return array de structs ordenados descendentemente por similitud
+     */
+    public array function search(
+        required string queryText,
+        numeric topK = 3,
+        numeric minSimilarity = 0.3,
+        array queryVector = []
+    ) {
+        if ( arrayLen( variables.documents ) == 0 ) {
+            return [];
+        }
+
+        var qDense = ( arrayLen( arguments.queryVector ) == variables.dimensions ) ? arguments.queryVector : embedText( arguments.queryText );
+        var qInt = variables.useQuantization ? quantize( qDense ) : [];
+
+        var scored = [];
+
+        for ( var doc in variables.documents ) {
+            var sim = 0.0;
+            if ( variables.useQuantization && arrayLen( doc.quantized ) > 0 && arrayLen( qInt ) > 0 ) {
+                sim = quantizedCosineSimilarity( qInt, doc.quantized );
+            } else {
+                sim = cosineSimilarity( qDense, doc.vector );
+            }
+
+            if ( sim >= arguments.minSimilarity ) {
+                arrayAppend( scored, {
+                    "id"         : doc.id,
+                    "score"      : sim,
+                    "text"       : doc.text,
+                    "metadata"   : doc.metadata,
+                    "createdAt"  : doc.createdAt
+                } );
+            }
+        }
+
+        // Ordenamiento descendente por score (Bubble sort simple para K pequeno)
+        var total = arrayLen( scored );
+        for ( var i = 1; i < total; i++ ) {
+            for ( var j = 1; j <= total - i; j++ ) {
+                if ( scored[ j ].score < scored[ j + 1 ].score ) {
+                    var tmp = scored[ j ];
+                    scored[ j ] = scored[ j + 1 ];
+                    scored[ j + 1 ] = tmp;
+                }
+            }
+        }
+
+        // Limitar a topK
+        var result = [];
+        var limit = min( arguments.topK, total );
+        for ( var k = 1; k <= limit; k++ ) {
+            arrayAppend( result, scored[ k ] );
+        }
+
+        return result;
+    }
+
+    /**
+     * Helper especializado para busqueda de incidentes pasados por firma de error.
+     */
+    public array function findSimilarIncidents(
+        required string errorSignature,
+        numeric topK = 2,
+        numeric minSimilarity = 0.5
+    ) {
+        return search(
+            queryText     = arguments.errorSignature,
+            topK          = arguments.topK,
+            minSimilarity = arguments.minSimilarity
+        );
+    }
+
+    /**
+     * Similitud de coseno entre dos vectores densos de coma flotante.
+     */
+    public numeric function cosineSimilarity( required array vecA, required array vecB ) {
+        var dot = 0.0;
+        var normA = 0.0;
+        var normB = 0.0;
+        var lenA = arrayLen( arguments.vecA );
+
+        for ( var i = 1; i <= lenA; i++ ) {
+            var a = arguments.vecA[ i ];
+            var b = arguments.vecB[ i ];
+            dot   += a * b;
+            normA += a * a;
+            normB += b * b;
+        }
+
+        if ( normA == 0 || normB == 0 ) {
+            return 0.0;
+        }
+
+        return round( ( dot / ( sqr( normA ) * sqr( normB ) ) ) * 10000 ) / 10000;
+    }
+
+    /**
+     * Similitud de coseno acelerada sobre vectores cuantizados int8.
+     */
+    public numeric function quantizedCosineSimilarity( required array qA, required array qB ) {
+        var dot = 0;
+        var normA = 0;
+        var normB = 0;
+        var n = arrayLen( arguments.qA );
+
+        for ( var i = 1; i <= n; i++ ) {
+            var a = arguments.qA[ i ];
+            var b = arguments.qB[ i ];
+            dot   += a * b;
+            normA += a * a;
+            normB += b * b;
+        }
+
+        if ( normA == 0 || normB == 0 ) {
+            return 0.0;
+        }
+
+        return round( ( dot / ( sqr( normA ) * sqr( normB ) ) ) * 10000 ) / 10000;
+    }
+
+    /**
+     * Retorna el numero total de documentos en la memoria.
+     */
+    public numeric function size() {
+        return arrayLen( variables.documents );
+    }
+
+    public numeric function count() {
+        return size();
+    }
+
+    /**
+     * Limpia todos los documentos de la memoria.
+     */
+    public void function clear() {
+        variables.documents = [];
+    }
+
+    /**
+     * Obtiene estadisticas operativas del VectorStore.
+     */
+    public struct function getStats() {
+        var approxBytes = arrayLen( variables.documents ) * ( ( variables.dimensions * ( variables.useQuantization ? 1 : 8 ) ) + 256 );
+        return {
+            "totalDocuments"     : arrayLen( variables.documents ),
+            "dimensions"         : variables.dimensions,
+            "useQuantization"    : variables.useQuantization,
+            "approxMemoryBytes"  : approxBytes,
+            "storagePath"        : variables.storagePath
+        };
+    }
+
+    /**
+     * Serializa la memoria a un archivo JSON.
+     */
+    public string function saveToFile( string path = "" ) {
+        var target = len( trim( arguments.path ) ) ? arguments.path : variables.storagePath;
+        if ( !len( trim( target ) ) ) {
+            throw( type = "VectorStoreException", message = "No se especifico ruta de guardado para VectorStore." );
+        }
+
+        if ( !reFind( "^([a-zA-Z]:|[\\/])", target ) ) {
+            target = expandPath( target );
+        }
+
+        var dir = getDirectoryFromPath( target );
+        if ( len( dir ) && !directoryExists( dir ) ) {
+            directoryCreate( dir, true );
+        }
+
+        var payload = {
+            "version"         : "1.0",
+            "engine"          : "FaultGraph-TurboVec-Native",
+            "dimensions"      : variables.dimensions,
+            "useQuantization" : variables.useQuantization,
+            "savedAt"         : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "documents"       : variables.documents
+        };
+
+        fileWrite( target, jsonSerialize( payload ) );
+        return target;
+    }
+
+    /**
+     * Deserializa la memoria desde un archivo JSON.
+     */
+    public numeric function loadFromFile( string path = "" ) {
+        var target = len( trim( arguments.path ) ) ? arguments.path : variables.storagePath;
+        if ( !len( trim( target ) ) ) {
+            return 0;
+        }
+
+        if ( !reFind( "^([a-zA-Z]:|[\\/])", target ) ) {
+            target = expandPath( target );
+        }
+
+        if ( !fileExists( target ) ) {
+            return 0;
+        }
+
+        var raw = fileRead( target );
+        if ( !isJson( raw ) ) {
+            return 0;
+        }
+
+        var data = jsonDeserialize( raw );
+        if ( structKeyExists( data, "documents" ) && isArray( data.documents ) ) {
+            variables.documents = data.documents;
+            if ( structKeyExists( data, "dimensions" ) ) {
+                variables.dimensions = data.dimensions;
+            }
+            if ( structKeyExists( data, "useQuantization" ) ) {
+                variables.useQuantization = data.useQuantization;
+            }
+        }
+
+        return arrayLen( variables.documents );
+    }
+
+}

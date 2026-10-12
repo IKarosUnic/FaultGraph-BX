@@ -1,0 +1,157 @@
+/**
+ * HypothesisEngineTest - Suite B4: Diagnosticos con causas raiz conocidas, hipotesis alternativas y evidencia insuficiente.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testNumericTypeMismatchClassification();
+        testNullConfigDerefClassification();
+        testHintBasedClassification();
+        testUnclassifiedErrorHandling();
+        testPatchabilityDetermination();
+    }
+
+    private void function testNumericTypeMismatchClassification() {
+        var id = "TC-B4-01";
+        var scenario = "Clasificacion de error de conversion numerica como TYPE_MISMATCH_NUMERIC (alta confianza)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var outcome = {
+                "results": [
+                    { "id": "TEST_CAST", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [15%] to a Number", "errorDetail": "", "errorLine": "45", "errorTemplate": "Service.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "" }
+                ]
+            };
+
+            var diag = healer.diagnose( outcome );
+            variables.assert.isEqual( 1, arrayLen( diag.causes ) );
+            variables.assert.isEqual( "TYPE_MISMATCH_NUMERIC", diag.causes[ 1 ].code );
+            variables.assert.isEqual( "CRITICAL", diag.causes[ 1 ].severity );
+            variables.assert.stringContains( "ALTA", diag.causes[ 1 ].confidence );
+
+            variables.reporter.record( id, scenario, "BoxCastException: Can't cast [15%] to a Number", "TYPE_MISMATCH_NUMERIC con confianza ALTA", "Codigo: " & diag.causes[ 1 ].code & ", confianza=" & diag.causes[ 1 ].confidence, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "BoxCastException", "TYPE_MISMATCH_NUMERIC", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testNullConfigDerefClassification() {
+        var id = "TC-B4-02";
+        var scenario = "Clasificacion de desreferencia nula como NULL_CONFIG_DEREF (alta confianza)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var outcome = {
+                "results": [
+                    { "id": "TEST_NULL", "survived": false, "errorType": "KeyNotFoundException", "errorMessage": "The key [fallback] was not found in the struct", "errorDetail": "", "errorLine": "50", "errorTemplate": "Service.bx", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "" }
+                ]
+            };
+
+            var diag = healer.diagnose( outcome );
+            variables.assert.isEqual( 1, arrayLen( diag.causes ) );
+            variables.assert.isEqual( "NULL_CONFIG_DEREF", diag.causes[ 1 ].code );
+            variables.assert.isEqual( "CRITICAL", diag.causes[ 1 ].severity );
+            variables.assert.stringContains( "ALTA", diag.causes[ 1 ].confidence );
+
+            variables.reporter.record( id, scenario, "KeyNotFoundException: The key [fallback] was not found", "NULL_CONFIG_DEREF con confianza ALTA", "Codigo: " & diag.causes[ 1 ].code & ", confianza=" & diag.causes[ 1 ].confidence, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "KeyNotFoundException", "NULL_CONFIG_DEREF", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testHintBasedClassification() {
+        var id = "TC-B4-03";
+        var scenario = "Clasificacion mediante faultHint cuando el mensaje del runtime es opaco (confianza media)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var outcome = {
+                "results": [
+                    { "id": "TEST_HINT", "survived": false, "errorType": "CustomError", "errorMessage": "Fallo interno opaco", "errorDetail": "", "errorLine": "", "errorTemplate": "", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "CONFIG_SHAPE" }
+                ]
+            };
+
+            var diag = healer.diagnose( outcome );
+            variables.assert.isEqual( 1, arrayLen( diag.causes ) );
+            variables.assert.isEqual( "NULL_CONFIG_DEREF", diag.causes[ 1 ].code );
+            variables.assert.stringContains( "MEDIA", diag.causes[ 1 ].confidence );
+
+            variables.reporter.record( id, scenario, "Mensaje opaco + faultHint=CONFIG_SHAPE", "NULL_CONFIG_DEREF con confianza MEDIA", "Codigo: " & diag.causes[ 1 ].code & ", confianza=" & diag.causes[ 1 ].confidence, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "faultHint test", "Confianza MEDIA", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testUnclassifiedErrorHandling() {
+        var id = "TC-B4-04";
+        var scenario = "Manejo de error desconocido sin tokens coincidentes ni pista (UNCLASSIFIED)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            var outcome = {
+                "results": [
+                    { "id": "TEST_UNKNOWN", "survived": false, "errorType": "DatabaseDeadlock", "errorMessage": "Deadlock victim error code 1205", "errorDetail": "", "errorLine": "", "errorTemplate": "", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "" }
+                ]
+            };
+
+            var diag = healer.diagnose( outcome );
+            variables.assert.isEqual( 1, arrayLen( diag.causes ) );
+            variables.assert.isEqual( "UNCLASSIFIED", diag.causes[ 1 ].code );
+            variables.assert.isEqual( "UNKNOWN", diag.causes[ 1 ].severity );
+            variables.assert.isFalse( diag.causes[ 1 ].patchable );
+            variables.assert.isFalse( diag.patchable );
+
+            variables.reporter.record( id, scenario, "DatabaseDeadlock 1205 sin tokens conocidos", "UNCLASSIFIED, patchable=false", "Codigo: " & diag.causes[ 1 ].code & ", patchable=" & diag.patchable, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Unknown error", "UNCLASSIFIED", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testPatchabilityDetermination() {
+        var id = "TC-B4-05";
+        var scenario = "Determinacion del flag patchable segun las causas diagnosticadas";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+
+            // Caso con causa conocida
+            var outcomeKnown = {
+                "results": [
+                    { "id": "S01", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%] to a Number", "errorDetail": "", "errorLine": 60, "errorTemplate": "", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "NUMERIC_CONTENT" }
+                ]
+            };
+            var diagKnown = healer.diagnose( outcomeKnown );
+            variables.assert.isTrue( diagKnown.patchable );
+
+            // Caso solo unclassified
+            var outcomeUnk = {
+                "results": [
+                    { "id": "S99", "survived": false, "errorType": "Custom", "errorMessage": "unrecognized syntax", "errorDetail": "", "errorLine": "", "errorTemplate": "", "gatewayMode": "timeout", "configMutation": "none", "faultHint": "" }
+                ]
+            };
+            var diagUnk = healer.diagnose( outcomeUnk );
+            variables.assert.isFalse( diagUnk.patchable );
+
+            variables.reporter.record( id, scenario, "Evaluacion de patchable en caso conocido vs desconocido", "Known -> true, Unknown -> false", "Known=" & diagKnown.patchable & ", Unknown=" & diagUnk.patchable, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Patchability", "true vs false", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

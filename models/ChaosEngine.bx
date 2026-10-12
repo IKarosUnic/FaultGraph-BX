@@ -1,0 +1,265 @@
+/**
+ * ChaosEngine - inyector de perturbaciones controladas.
+ *
+ * Fabrica una instancia nueva del servicio objetivo por escenario (via serviceFactory),
+ * le inyecta un gateway defectuoso y/o una configuracion mutada, y evalua si el
+ * fallback responde con un contrato valido o revienta.
+ *
+ * serviceFactory: function( struct serviceConfig, any gateway ) que devuelve el servicio.
+ */
+class {
+
+    public any function init( required any serviceFactory, required struct baseConfig, string label = "target", any registry, any eventBus ) {
+        variables.serviceFactory = arguments.serviceFactory;
+        variables.baseConfig     = arguments.baseConfig;
+        variables.label          = arguments.label;
+        variables.registry       = structKeyExists( arguments, "registry" ) && !isNull( arguments.registry ) ? arguments.registry : new models.ScenarioRegistry();
+        variables.eventBus       = structKeyExists( arguments, "eventBus" ) && !isNull( arguments.eventBus ) ? arguments.eventBus : null;
+        return this;
+    }
+
+    public any function getRegistry() {
+        return variables.registry;
+    }
+
+    public any function getServiceFactory() {
+        return variables.serviceFactory;
+    }
+
+    public any function createServiceInstance( struct customConfig = {}, any customGateway = null ) {
+        var cfg = structCount( arguments.customConfig ) > 0 ? arguments.customConfig : duplicate( variables.baseConfig );
+        var gw  = !isNull( arguments.customGateway ) ? arguments.customGateway : buildGateway( "TIMEOUT" );
+        return variables.serviceFactory( cfg, gw );
+    }
+
+    public string function getLabel() {
+        return variables.label;
+    }
+
+    /**
+     * Catalogo de escenarios provisto por el ScenarioRegistry.
+     */
+    public array function getScenarios() {
+        return variables.registry.getScenarios();
+    }
+
+    public struct function getScenario( required string id ) {
+        return variables.registry.getScenario( arguments.id );
+    }
+
+    /**
+     * Ejecuta un escenario y devuelve un registro de resultado.
+     */
+    public struct function runScenario( required struct scenario ) {
+        var started = getTickCount();
+        var outcome = {
+            id             : arguments.scenario.id,
+            title          : arguments.scenario.title,
+            gatewayMode    : arguments.scenario.gatewayMode,
+            configMutation : arguments.scenario.configMutation,
+            faultHint      : arguments.scenario.faultHint,
+            amountSent     : arguments.scenario.amount,
+            survived       : false,
+            status         : "",
+            channel        : "",
+            errorType      : "",
+            errorMessage   : "",
+            errorDetail    : "",
+            errorLine      : "",
+            errorTemplate  : "",
+            durationMs     : 0,
+            result         : {}
+        };
+
+        try {
+            var cfg     = mutateConfig( arguments.scenario.configMutation );
+            var gateway = buildGateway( arguments.scenario.gatewayMode );
+            var service = variables.serviceFactory( cfg, gateway );
+            var reply   = service.charge( "ORD-" & arguments.scenario.id, arguments.scenario.amount, "USD" );
+
+            var verdict = evaluate( arguments.scenario, reply );
+            if ( isStruct( reply ) ) {
+                outcome.result = reply;
+                if ( structKeyExists( reply, "status" ) )  { outcome.status  = reply.status; }
+                if ( structKeyExists( reply, "channel" ) ) { outcome.channel = reply.channel; }
+            }
+            outcome.survived = verdict.ok;
+            if ( !verdict.ok ) {
+                outcome.errorType    = "ContractViolation";
+                outcome.errorMessage = verdict.reason;
+            }
+        } catch ( any e ) {
+            outcome.survived     = false;
+            outcome.errorType    = e.type;
+            outcome.errorMessage = e.message;
+            outcome.errorDetail  = e.detail;
+            try {
+                if ( isArray( e.tagContext ) && arrayLen( e.tagContext ) > 0 ) {
+                    outcome.errorLine     = e.tagContext[ 1 ].line;
+                    outcome.errorTemplate = e.tagContext[ 1 ].template;
+                }
+            } catch ( any ignore ) {
+                // el runtime no expone tagContext: no es critico
+            }
+        }
+
+        outcome.durationMs = getTickCount() - started;
+        if ( !isNull( variables.eventBus ) ) {
+            variables.eventBus.emit( "onScenarioCompleted", { "id": outcome.id, "survived": outcome.survived, "durationMs": outcome.durationMs } );
+        }
+        return outcome;
+    }
+
+    /**
+     * Ejecuta todos los escenarios y agrega estadisticas.
+     * Soporta concurrencia masiva no-bloqueante mediante BoxLang runAsync().
+     */
+    public struct function runAll( boolean parallel = false ) {
+        var t0          = getTickCount();
+        var scenarios   = getScenarios();
+        var results     = [];
+        var threadModel = "Sequential";
+
+        if ( !isNull( variables.eventBus ) ) {
+            variables.eventBus.emit( "onChaosExecutionStart", { "label": variables.label, "scenarioCount": arrayLen( scenarios ), "parallel": arguments.parallel } );
+        }
+
+        if ( arguments.parallel && arrayLen( scenarios ) > 1 ) {
+            try {
+                // Ejecucion paralela asincrona nativa en BoxLang utilizando el pool de Virtual Threads configurado
+                var rt           = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+                var asyncSvc     = rt.getAsyncService();
+                var useChaosPool = asyncSvc.hasExecutor( "chaos-pool" );
+                var futures      = scenarios.map( ( sc ) => {
+                    return useChaosPool
+                        ? runAsync( () => this.runScenario( sc ), "chaos-pool" )
+                        : runAsync( () => this.runScenario( sc ) );
+                } );
+                results     = futures.map( ( f ) => f.get() );
+                threadModel = "BoxLang-AsyncParallel";
+            } catch ( any asyncEx ) {
+                // Fallback seguro a secuencial si el contexto concurrente falla
+                results = [];
+                for ( var sc in scenarios ) {
+                    arrayAppend( results, runScenario( sc ) );
+                }
+                threadModel = "Sequential-Fallback";
+            }
+        } else {
+            for ( var sc in scenarios ) {
+                arrayAppend( results, runScenario( sc ) );
+            }
+        }
+
+        var survived = 0;
+        for ( var r in results ) {
+            if ( r.survived ) {
+                survived = survived + 1;
+            }
+        }
+
+        var out = {
+            label       : variables.label,
+            total       : arrayLen( results ),
+            survived    : survived,
+            failed      : arrayLen( results ) - survived,
+            durationMs  : getTickCount() - t0,
+            results     : results,
+            threadModel : threadModel
+        };
+
+        if ( !isNull( variables.eventBus ) ) {
+            variables.eventBus.emit( "onChaosExecutionEnd", out );
+        }
+
+        return out;
+    }
+
+    // ------------------------------------------------------------------
+    // Internos
+    // ------------------------------------------------------------------
+
+    /**
+     * Contrato esperado: con el gateway sano -> APPROVED; con el gateway roto ->
+     * el fallback debe responder QUEUED_OFFLINE con un total numerico positivo
+     * (o rechazar limpiamente un monto invalido). Cualquier excepcion es un fallo.
+     */
+    private struct function evaluate( required struct scenario, required any reply ) {
+        if ( !isStruct( arguments.reply ) ) {
+            return { ok: false, reason: "El servicio devolvio un valor que no es una estructura" };
+        }
+        if ( !structKeyExists( arguments.reply, "status" ) ) {
+            return { ok: false, reason: "La respuesta no incluye el campo status" };
+        }
+        if ( arguments.scenario.gatewayMode == "healthy" ) {
+            if ( arguments.reply.status == "APPROVED" && structKeyExists( arguments.reply, "authCode" ) ) {
+                return { ok: true, reason: "" };
+            }
+            return { ok: false, reason: "Con el gateway sano se esperaba APPROVED con authCode" };
+        }
+        if ( arguments.reply.status == "REJECTED_INVALID_AMOUNT" ) {
+            return { ok: true, reason: "" };
+        }
+        if ( arguments.reply.status != "QUEUED_OFFLINE" ) {
+            return { ok: false, reason: "El fallback devolvio un estado inesperado: " & arguments.reply.status };
+        }
+        if ( !structKeyExists( arguments.reply, "totalWithSurcharge" ) || !isNumeric( arguments.reply.totalWithSurcharge ) || arguments.reply.totalWithSurcharge <= 0 ) {
+            return { ok: false, reason: "totalWithSurcharge no es un numero positivo" };
+        }
+        return { ok: true, reason: "" };
+    }
+
+    private struct function mutateConfig( required string mutation ) {
+        var cfg = duplicate( variables.baseConfig );
+        switch ( arguments.mutation ) {
+            case "none":
+                break;
+            case "drop_fallback":
+                structDelete( cfg, "fallback" );
+                break;
+            case "empty_rate":
+                cfg.fallback.surchargePct = "";
+                break;
+            case "numeric_rate":
+                cfg.fallback.surchargePct = 0.025;
+                break;
+            case "wrong_type":
+                cfg.fallback = "disabled";
+                break;
+            default:
+                throw( type = "ChaosEngine.UnknownMutation", message = "Mutacion desconocida: " & arguments.mutation );
+        }
+        return cfg;
+    }
+
+    /**
+     * Gateways simulados. Cada uno es un closure con la misma firma que el gateway real.
+     */
+    private any function buildGateway( required string mode ) {
+        switch ( arguments.mode ) {
+            case "healthy":
+                return function( orderId, amount, currency ) {
+                    return {
+                        "authCode" : "AUTH-" & ucase( left( hash( arguments.orderId ), 8 ) ),
+                        "status"   : "OK"
+                    };
+                };
+            case "timeout":
+                return function( orderId, amount, currency ) {
+                    sleep( 150 );
+                    throw( type = "Gateway.TimeoutException", message = "Gateway read timed out after 3000 ms (inyectado por ChaosEngine)" );
+                };
+            case "null":
+                return function( orderId, amount, currency ) {
+                    return;
+                };
+            case "garbage":
+                return function( orderId, amount, currency ) {
+                    return "<html><body><h1>502 Bad Gateway</h1></body></html>";
+                };
+            default:
+                throw( type = "ChaosEngine.UnknownGatewayMode", message = "Modo de gateway desconocido: " & arguments.mode );
+        }
+    }
+
+}

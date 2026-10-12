@@ -1,0 +1,215 @@
+/**
+ * JavaEcosystem - Modulo de conocimiento especializado y analizador estatico determinista para Java (JVM).
+ *
+ * Fuente: Oracle Java Language Specification (JLS), SEI CERT Oracle Coding Standard for Java, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "Java";
+        variables.version     = "Java SE 8 / 11 / 17 / 21 LTS";
+        variables.provenance  = "Oracle Java Language Specification / OpenJDK / SEI CERT Java";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"       : variables.name,
+            "version"    : variables.version,
+            "provenance" : variables.provenance,
+            "lastUpdated": variables.lastUpdated,
+            "reliability": variables.reliability,
+            "buildTools" : [ "Maven (mvn)", "Gradle (gradle)" ],
+            "testFrameworks": [ "JUnit 5", "JUnit 4", "TestNG", "Mockito" ],
+            "packageManagers": [ "Maven Central", "Gradle Plugin Portal" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "JAVA_NULL_POINTER_EXCEPTION",
+                "cwe"         : "CWE-476",
+                "severity"    : "HIGH",
+                "title"       : "NullPointerException (NPE) por desreferencia de referencia nula",
+                "symptoms"    : "java.lang.NullPointerException en ejecucion durante invocacion de metodo o acceso a campo",
+                "rootCause"   : "Intento de invocar metodos, desreferenciar o desempaquetar variables nulas sin comprobacion previa",
+                "remediation" : "Utilizar Optional, Objects.requireNonNull() o clausulas de guarda if (val != null) previas",
+                "exampleVuln" : 'String s = map.get(key); return s.trim();',
+                "exampleFixed": 'String s = map.get(key); return s != null ? s.trim() : "";'
+            },
+            {
+                "code"        : "JAVA_RESOURCE_LEAK_STREAM",
+                "cwe"         : "CWE-775",
+                "severity"    : "HIGH",
+                "title"       : "Fuga de descriptores de archivo o conexiones de red (Resource Leak)",
+                "symptoms"    : "java.io.IOException: Too many open files o agotamiento de sockets",
+                "rootCause"   : "Streams, Readers o Sockets abiertos sin clausura garantizada en try-with-resources",
+                "remediation" : "Envolver los recursos en sentencias try-with-resources: try (InputStream is = ...) { ... }",
+                "exampleVuln" : 'FileInputStream fis = new FileInputStream(file); fis.read();',
+                "exampleFixed": 'try (FileInputStream fis = new FileInputStream(file)) { fis.read(); }'
+            },
+            {
+                "code"        : "JAVA_SQL_INJECTION_JDBC",
+                "cwe"         : "CWE-89",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion SQL en consultas JDBC dinámicas",
+                "symptoms"    : "Manipulacion de sentencias SQL mediante concatenacion de parametros externos",
+                "rootCause"   : "Uso de Statement.executeQuery con concatenacion de strings en lugar de consultas preparadas",
+                "remediation" : "Utilizar PreparedStatement con marcadores posicionales '?' y metodos setString/setInt",
+                "exampleVuln" : 'stmt.executeQuery("SELECT * FROM users WHERE user = " + u);',
+                "exampleFixed": 'PreparedStatement ps = conn.prepareStatement("SELECT * FROM users WHERE user = ?"); ps.setString(1, u); ps.executeQuery();'
+            },
+            {
+                "code"        : "JAVA_COMMAND_INJECTION_EXEC",
+                "cwe"         : "CWE-78",
+                "severity"    : "CRITICAL",
+                "title"       : "Ejecucion insegura de comandos del sistema operativo (CWE-78)",
+                "symptoms"    : "Invocacion de Runtime.getRuntime().exec() o ProcessBuilder con datos del usuario",
+                "rootCause"   : "Concatenacion directa de cadenas no sanitizadas en la linea de comando del SO",
+                "remediation" : "Utilizar ProcessBuilder con lista estricta de argumentos validados contra lista blanca",
+                "exampleVuln" : 'Runtime.getRuntime().exec("sh -c " + input);',
+                "exampleFixed": 'ProcessBuilder pb = new ProcessBuilder(Arrays.asList("safe_bin", validatedArg));'
+            },
+            {
+                "code"        : "JAVA_INSECURE_DESERIALIZATION",
+                "cwe"         : "CWE-502",
+                "severity"    : "CRITICAL",
+                "title"       : "Deserializacion binaria no confiable via ObjectInputStream (CWE-502)",
+                "symptoms"    : "Ejecucion remota de codigo (RCE) mediante cadenas de gadgets durante readObject()",
+                "rootCause"   : "Lectura de flujos de bytes serializados de fuentes no autenticadas",
+                "remediation" : "Migrar a serializacion tipada segura (JSON/ProtoBuf) o implementar ObjectInputFilter estricto",
+                "exampleVuln" : 'ObjectInputStream ois = new ObjectInputStream(is); Object obj = ois.readObject();',
+                "exampleFixed": 'ois.setObjectInputFilter(ObjectInputFilter.Config.createFilter("com.myapp.dto.*;!*;"));'
+            },
+            {
+                "code"        : "JAVA_EMPTY_CATCH_BLOCK",
+                "cwe"         : "CWE-390",
+                "severity"    : "MEDIUM",
+                "title"       : "Excepcion tragada silenciosamente en bloque catch vacio (CWE-390)",
+                "symptoms"    : "Fallos en produccion sin traza de error en los logs ni telemetria",
+                "rootCause"   : "catch (Exception e) {} sin registrar logging ni relanzar excepcion",
+                "remediation" : "Registrar mediante logger formal (e.g. log.error) o relanzar excepcion envuelta",
+                "exampleVuln" : 'catch (Exception e) { }',
+                "exampleFixed": 'catch (Exception e) { logger.error("Error", e); throw new ServiceException(e); }'
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+        var inBlockComment = false;
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( inBlockComment ) {
+                if ( find( "*/", trimmed ) > 0 ) { inBlockComment = false; }
+                continue;
+            }
+            if ( left( trimmed, 2 ) == "/*" ) {
+                if ( find( "*/", trimmed ) == 0 ) { inBlockComment = true; }
+                continue;
+            }
+            if ( left( trimmed, 2 ) == "//" || left( trimmed, 1 ) == "*" ) {
+                continue;
+            }
+
+            // 1. Inyeccion SQL en JDBC
+            if ( reFindNoCase( "(createStatement\s*\(|executeQuery\s*\([^;)]*(\+|\bconcat\b)|executeUpdate\s*\([^;)]*(\+|\bconcat\b))", line )
+                && ( findNoCase( "SELECT", line ) || findNoCase( "INSERT", line ) || findNoCase( "UPDATE", line ) || findNoCase( "DELETE", line ) || find( "+", line ) ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JAVA_SQL_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-89",
+                    "language"   : "Java",
+                    "description": "Posible inyeccion SQL mediante concatenacion dinamica en consulta JDBC (CWE-89).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar PreparedStatement con bindings de parametros '?'."
+                } );
+            }
+
+            // 2. Ejecucion de comandos del sistema
+            if ( reFindNoCase( "(Runtime\.getRuntime\(\)\.exec|ProcessBuilder\s*\([^)]*\+)", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JAVA_COMMAND_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "Java",
+                    "description": "Invocacion de comandos del sistema operativo potencialmente expuesta a inyeccion (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Validar argumentos contra lista blanca estricta y usar ProcessBuilder con tokens separados."
+                } );
+            }
+
+            // 3. Secretos hardcodeados
+            if ( reFindNoCase( "(apiKey|api_key|password|jwtSecret|client_secret)\s*=\s*['""][A-Za-z0-9_\-\.]{16,}['""]", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JAVA_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "Java",
+                    "description": "Credencial o secreto confidencial hardcodeado en codigo fuente Java (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Cargar secretos mediante variables de entorno System.getenv() o gestor de configuracion."
+                } );
+            }
+
+            // 4. Deserializacion binaria insegura
+            if ( find( "ObjectInputStream", line ) && ( find( "readObject()", line ) || find( "new ObjectInputStream", line ) ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JAVA_INSECURE_DESERIALIZATION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-502",
+                    "language"   : "Java",
+                    "description": "Deserializacion de objetos Java mediante ObjectInputStream vulnerable a RCE (CWE-502).",
+                    "evidence"   : trimmed,
+                    "remediation": "Configurar ObjectInputFilter o utilizar formatos de serializacion estructurados como JSON/ProtoBuf."
+                } );
+            }
+
+            // 5. Streams sin cierre garantizado
+            if ( reFindNoCase( "new\s+(FileInputStream|FileOutputStream|FileReader|FileWriter)\s*\(", line ) && !find( "try (", line ) && !find( "try(", line ) ) {
+                var hasTryWithResources = false;
+                if ( i > 1 && find( "try (", arguments.lines[ i - 1 ] ) ) { hasTryWithResources = true; }
+                if ( !hasTryWithResources ) {
+                    arrayAppend( issues, {
+                        "line"       : i,
+                        "code"       : "JAVA_RESOURCE_LEAK",
+                        "severity"   : "HIGH",
+                        "cwe"        : "CWE-775",
+                        "language"   : "Java",
+                        "description": "Apertura de stream I/O sin sintaxis try-with-resources (CWE-775 / CWE-404).",
+                        "evidence"   : trimmed,
+                        "remediation": "Encapsular el stream en una clausula 'try (FileInputStream fis = ...) { ... }'."
+                    } );
+                }
+            }
+
+            // 6. Bloque catch vacio
+            if ( reFindNoCase( "catch\s*\([^)]*\)\s*\{\s*\}", trimmed ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JAVA_EMPTY_CATCH",
+                    "severity"   : "MEDIUM",
+                    "cwe"        : "CWE-390",
+                    "language"   : "Java",
+                    "description": "Bloque catch vacio que silencia excepciones sin registrar telemetria (CWE-390).",
+                    "evidence"   : trimmed,
+                    "remediation": "Registrar la excepcion con log.error() o relanzarla de forma controlada."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

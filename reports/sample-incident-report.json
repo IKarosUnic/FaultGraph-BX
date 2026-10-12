@@ -1,0 +1,808 @@
+{
+  "before" : {
+    "threadModel" : "Sequential",
+    "total" : 8,
+    "durationMs" : 789,
+    "results" : [ {
+      "errorMessage" : "",
+      "faultHint" : "NONE",
+      "channel" : "GATEWAY",
+      "title" : "Control: gateway sano",
+      "amountSent" : 129.9,
+      "result" : {
+        "channel" : "GATEWAY",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S00_HEALTHY_CONTROL",
+        "authCode" : "AUTH-4B716132",
+        "status" : "APPROVED"
+      },
+      "errorLine" : "",
+      "id" : "S00_HEALTHY_CONTROL",
+      "durationMs" : 1,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "healthy",
+      "status" : "APPROVED"
+    }, {
+      "errorMessage" : "Can't cast [2.5%] to a Number.",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "",
+      "title" : "Gateway: timeout de lectura",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S01_GATEWAY_TIMEOUT",
+      "durationMs" : 152,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "BoxCastException",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "timeout",
+      "status" : ""
+    }, {
+      "errorMessage" : "Can't cast [2.5%] to a Number.",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "",
+      "title" : "Gateway: respuesta nula",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S02_GATEWAY_NULL_RESPONSE",
+      "durationMs" : 2,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "BoxCastException",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "null",
+      "status" : ""
+    }, {
+      "errorMessage" : "Can't cast [2.5%] to a Number.",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "",
+      "title" : "Gateway: payload roto (HTML 502)",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S03_GATEWAY_BROKEN_PAYLOAD",
+      "durationMs" : 1,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "BoxCastException",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "garbage",
+      "status" : ""
+    }, {
+      "errorMessage" : "The key [fallback] was not found in the struct. Valid keys are ([currency, merchantId, gateway])",
+      "faultHint" : "CONFIG_SHAPE",
+      "channel" : "",
+      "title" : "Caida + seccion fallback ausente",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S04_FALLBACK_CONFIG_MISSING",
+      "durationMs" : 152,
+      "configMutation" : "drop_fallback",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "Application",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "timeout",
+      "status" : ""
+    }, {
+      "errorMessage" : "Can't cast [] to a Number.",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "",
+      "title" : "Caida + recargo configurado vacio",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S05_FALLBACK_RATE_EMPTY",
+      "durationMs" : 158,
+      "configMutation" : "empty_rate",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "BoxCastException",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "timeout",
+      "status" : ""
+    }, {
+      "errorMessage" : "Can't cast [1,299.50] to a Number.",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "",
+      "title" : "Caida + monto formateado (1,299.50)",
+      "amountSent" : "1,299.50",
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S06_AMOUNT_FORMATTED_STRING",
+      "durationMs" : 157,
+      "configMutation" : "numeric_rate",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "BoxCastException",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "timeout",
+      "status" : ""
+    }, {
+      "errorMessage" : "The instance [java.lang.String] has no public field or inner class [surchargePct]. The allowed fields are [[REPL, UTF16, hash, value, COMPACT_STRINGS, coder, serialVersionUID, CASE_INSENSITIVE_ORDER, serialPersistentFields, LATIN1, hashIsZero]]",
+      "faultHint" : "CONFIG_SHAPE",
+      "channel" : "",
+      "title" : "Caida + fallback con tipo equivocado",
+      "amountSent" : 129.9,
+      "result" : { },
+      "errorLine" : 60,
+      "id" : "S07_FALLBACK_CONFIG_WRONG_TYPE",
+      "durationMs" : 165,
+      "configMutation" : "wrong_type",
+      "errorDetail" : "",
+      "survived" : false,
+      "errorType" : "Application",
+      "errorTemplate" : "C:\\GIT HUB\\box\\target_app\\PaymentService.bx",
+      "gatewayMode" : "timeout",
+      "status" : ""
+    } ],
+    "label" : "PaymentService (test)",
+    "survived" : 1,
+    "failed" : 7
+  },
+  "patch" : {
+    "reason" : "",
+    "patchedPath" : "C:\\GIT HUB\\box\\target_app/PaymentServicePatched.bx",
+    "fixes" : [ "NULL_CONFIG_DEREF -> Validar existencia y tipo de la seccion fallback y de cada clave, con valores por defecto seguros.", "TYPE_MISMATCH_NUMERIC -> Normalizar porcentajes y montos (quitar simbolos y separadores), validar con isNumeric() y aplicar un recargo por defecto si el valor es invalido." ],
+    "ok" : true,
+    "diff" : [ "-         // Cobro diferido: se encola la orden y se suma el recargo configurado.", "-         var surcharge = arguments.amount * variables.config.fallback.surchargePct;", "-         var total     = arguments.amount + surcharge;", "-         var queueName = variables.config.fallback.queueName;", "-         arrayAppend( variables.offlineQueue, { orderId: arguments.orderId, total: total, queue: queueName } );", "-         return {", "-             orderId            : arguments.orderId,", "-             status             : \"QUEUED_OFFLINE\",", "-             channel            : queueName,", "-             amount             : arguments.amount,", "-             surcharge          : surcharge,", "-             totalWithSurcharge : total,", "-             currency           : arguments.currency,", "-             cause              : arguments.cause.type", "-         };", "+         // [FaultGraph-BX] fallback endurecido sintetizado adaptativamente:", "+         //  - Regla NULL_CONFIG_DEREF: proteccion de desreferencia y valores por defecto seguros", "+         //  - Regla TYPE_MISMATCH_NUMERIC: normalizacion de porcentajes y montos", "+         var fb = ( structKeyExists( variables.config, \"fallback\" ) && isStruct( variables.config.fallback ) ) ? variables.config.fallback : {};", "+         var queueName = ( structKeyExists( fb, \"queueName\" ) && isSimpleValue( fb.queueName ) && len( trim( fb.queueName ) ) ) ? trim( fb.queueName ) : \"payments-offline-default\";", "+         var surchargeRate = 0.025;", "+         if ( structKeyExists( fb, \"surchargePct\" ) && isSimpleValue( fb.surchargePct ) ) {", "+             var rawRate = trim( toString( fb.surchargePct ) );", "+             var hasPercentSign = find( \"%\", rawRate ) > 0;", "+             rawRate = trim( replace( rawRate, \"%\", \"\", \"all\" ) );", "+             if ( isNumeric( rawRate ) ) {", "+                 surchargeRate = ( hasPercentSign || rawRate > 1 ) ? rawRate / 100 : rawRate;", "+             }", "+         }", "+         var cleanAmount = trim( replace( replace( toString( arguments.amount ), \",\", \"\", \"all\" ), \"$\", \"\", \"all\" ) );", "+         if ( !isNumeric( cleanAmount ) || cleanAmount <= 0 ) {", "+             return {", "+                 orderId            : arguments.orderId,", "+                 status             : \"REJECTED_INVALID_AMOUNT\",", "+                 channel            : \"NONE\",", "+                 amount             : 0,", "+                 surcharge          : 0,", "+                 totalWithSurcharge : 0,", "+                 currency           : arguments.currency,", "+                 cause              : arguments.cause.type", "+             };", "+         }", "+         var baseAmount = cleanAmount + 0;", "+         var surcharge  = round( baseAmount * surchargeRate * 100 ) / 100;", "+         var total      = baseAmount + surcharge;", "+         arrayAppend( variables.offlineQueue, { orderId: arguments.orderId, total: total, queue: queueName } );", "+         return {", "+             orderId            : arguments.orderId,", "+             status             : \"QUEUED_OFFLINE\",", "+             channel            : queueName,", "+             amount             : baseAmount,", "+             surcharge          : surcharge,", "+             totalWithSurcharge : total,", "+             currency           : arguments.currency,", "+             cause              : arguments.cause.type", "+         };" ],
+    "changed" : true
+  },
+  "generatedAt" : "2026-10-11 13:59:20",
+  "after" : {
+    "threadModel" : "Sequential",
+    "total" : 8,
+    "durationMs" : 803,
+    "results" : [ {
+      "errorMessage" : "",
+      "faultHint" : "NONE",
+      "channel" : "GATEWAY",
+      "title" : "Control: gateway sano",
+      "amountSent" : 129.9,
+      "result" : {
+        "channel" : "GATEWAY",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S00_HEALTHY_CONTROL",
+        "authCode" : "AUTH-4B716132",
+        "status" : "APPROVED"
+      },
+      "errorLine" : "",
+      "id" : "S00_HEALTHY_CONTROL",
+      "durationMs" : 16,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "healthy",
+      "status" : "APPROVED"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "payments-offline",
+      "title" : "Gateway: timeout de lectura",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline",
+        "cause" : "Gateway.TimeoutException",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S01_GATEWAY_TIMEOUT",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S01_GATEWAY_TIMEOUT",
+      "durationMs" : 161,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "timeout",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "payments-offline",
+      "title" : "Gateway: respuesta nula",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline",
+        "cause" : "Application",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S02_GATEWAY_NULL_RESPONSE",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S02_GATEWAY_NULL_RESPONSE",
+      "durationMs" : 1,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "null",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "payments-offline",
+      "title" : "Gateway: payload roto (HTML 502)",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline",
+        "cause" : "Application",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S03_GATEWAY_BROKEN_PAYLOAD",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S03_GATEWAY_BROKEN_PAYLOAD",
+      "durationMs" : 1,
+      "configMutation" : "none",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "garbage",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "CONFIG_SHAPE",
+      "channel" : "payments-offline-default",
+      "title" : "Caida + seccion fallback ausente",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline-default",
+        "cause" : "Gateway.TimeoutException",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S04_FALLBACK_CONFIG_MISSING",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S04_FALLBACK_CONFIG_MISSING",
+      "durationMs" : 155,
+      "configMutation" : "drop_fallback",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "timeout",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "payments-offline",
+      "title" : "Caida + recargo configurado vacio",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline",
+        "cause" : "Gateway.TimeoutException",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S05_FALLBACK_RATE_EMPTY",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S05_FALLBACK_RATE_EMPTY",
+      "durationMs" : 159,
+      "configMutation" : "empty_rate",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "timeout",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "NUMERIC_CONTENT",
+      "channel" : "payments-offline",
+      "title" : "Caida + monto formateado (1,299.50)",
+      "amountSent" : "1,299.50",
+      "result" : {
+        "surcharge" : 32.49,
+        "channel" : "payments-offline",
+        "cause" : "Gateway.TimeoutException",
+        "currency" : "USD",
+        "amount" : 1299.5,
+        "orderId" : "ORD-S06_AMOUNT_FORMATTED_STRING",
+        "totalWithSurcharge" : 1331.99,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S06_AMOUNT_FORMATTED_STRING",
+      "durationMs" : 157,
+      "configMutation" : "numeric_rate",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "timeout",
+      "status" : "QUEUED_OFFLINE"
+    }, {
+      "errorMessage" : "",
+      "faultHint" : "CONFIG_SHAPE",
+      "channel" : "payments-offline-default",
+      "title" : "Caida + fallback con tipo equivocado",
+      "amountSent" : 129.9,
+      "result" : {
+        "surcharge" : 3.25,
+        "channel" : "payments-offline-default",
+        "cause" : "Gateway.TimeoutException",
+        "currency" : "USD",
+        "amount" : 129.9,
+        "orderId" : "ORD-S07_FALLBACK_CONFIG_WRONG_TYPE",
+        "totalWithSurcharge" : 133.15,
+        "status" : "QUEUED_OFFLINE"
+      },
+      "errorLine" : "",
+      "id" : "S07_FALLBACK_CONFIG_WRONG_TYPE",
+      "durationMs" : 153,
+      "configMutation" : "wrong_type",
+      "errorDetail" : "",
+      "survived" : true,
+      "errorType" : "",
+      "errorTemplate" : "",
+      "gatewayMode" : "timeout",
+      "status" : "QUEUED_OFFLINE"
+    } ],
+    "label" : "PaymentServicePatched (test)",
+    "survived" : 8,
+    "failed" : 0
+  },
+  "inspection" : {
+    "findings" : [ {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNGUARDED_CONFIG_CHAIN",
+      "line" : 60,
+      "risk" : "Cadena de acceso a configuracion sin validar existencia ni tipo"
+    }, {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNVALIDATED_NUMERIC_CONFIG",
+      "line" : 60,
+      "risk" : "Aritmetica con un valor de configuracion que podria no ser numerico"
+    }, {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNNORMALIZED_INPUT_ARITHMETIC",
+      "line" : 60,
+      "risk" : "Aritmetica directa sobre un monto sin normalizar (texto, separadores, simbolos)"
+    }, {
+      "snippet" : "var total     = arguments.amount + surcharge;",
+      "code" : "UNNORMALIZED_INPUT_ARITHMETIC",
+      "line" : 61,
+      "risk" : "Aritmetica directa sobre un monto sin normalizar (texto, separadores, simbolos)"
+    }, {
+      "snippet" : "var queueName = variables.config.fallback.queueName;",
+      "code" : "UNGUARDED_CONFIG_CHAIN",
+      "line" : 62,
+      "risk" : "Cadena de acceso a configuracion sin validar existencia ni tipo"
+    } ],
+    "regionEnd" : 74,
+    "path" : "C:\\GIT HUB\\box\\target_app/PaymentService.bx",
+    "attackSurface" : {
+      "totalFilesInspected" : 1,
+      "entryPointsCount" : 4,
+      "graphSummary" : {
+        "totalEdges" : 5,
+        "totalNodes" : 6,
+        "edges" : [ {
+          "metadata" : {
+            "line" : 35
+          },
+          "source" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+          "type" : "CONTAINS",
+          "target" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:charge"
+        }, {
+          "metadata" : {
+            "line" : 57
+          },
+          "source" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+          "type" : "CONTAINS",
+          "target" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:fallbackCharge"
+        }, {
+          "metadata" : {
+            "line" : 77
+          },
+          "source" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+          "type" : "CONTAINS",
+          "target" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getOfflineQueue"
+        }, {
+          "metadata" : {
+            "line" : 81
+          },
+          "source" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+          "type" : "CONTAINS",
+          "target" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getStats"
+        }, {
+          "metadata" : {
+            "hasAuthCheck" : false,
+            "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+            "boundaryType" : "PUBLIC_UNAUTHENTICATED_ZONE",
+            "id" : "TB:C:/GIT HUB/box/target_app/PaymentService.bx"
+          },
+          "source" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+          "type" : "BOUNDED_BY",
+          "target" : "TB:C:/GIT HUB/box/target_app/PaymentService.bx"
+        }, {
+          "metadata" : {
+            "durationMs" : 158
+          },
+          "source" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+          "type" : "REFUTED_BY",
+          "target" : "TEST:HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f:135919"
+        }, {
+          "metadata" : {
+            "durationMs" : 157
+          },
+          "source" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+          "type" : "REFUTED_BY",
+          "target" : "TEST:HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f:135919"
+        } ],
+        "nodes" : {
+          "TEST:HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f:135919" : {
+            "data" : {
+              "attackVector" : "Config Tampering / Missing Property Injection",
+              "observedError" : "",
+              "defended" : true,
+              "durationMs" : 158,
+              "reproduced" : false,
+              "rationale" : "El servicio aplico validacion defensiva (QUEUED_OFFLINE); la hipotesis de caida queda refutada.",
+              "hypothesisId" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+              "status" : "DISPROVED"
+            },
+            "type" : "TEST",
+            "id" : "TEST:HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f:135919",
+            "label" : "Emulacion DISPROVED",
+            "createdAt" : "2026-10-11 13:59:19"
+          },
+          "TB:C:/GIT HUB/box/target_app/PaymentService.bx" : {
+            "data" : {
+              "hasAuthCheck" : false,
+              "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "boundaryType" : "PUBLIC_UNAUTHENTICATED_ZONE",
+              "id" : "TB:C:/GIT HUB/box/target_app/PaymentService.bx"
+            },
+            "type" : "TRUST_BOUNDARY",
+            "id" : "TB:C:/GIT HUB/box/target_app/PaymentService.bx",
+            "label" : "PUBLIC_UNAUTHENTICATED_ZONE",
+            "createdAt" : "2026-10-11 13:59:17"
+          },
+          "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getOfflineQueue" : {
+            "data" : {
+              "line" : 77,
+              "type" : "PUBLIC_METHOD",
+              "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getOfflineQueue",
+              "name" : "getOfflineQueue"
+            },
+            "type" : "FUNCTION",
+            "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getOfflineQueue",
+            "label" : "getOfflineQueue",
+            "createdAt" : "2026-10-11 13:59:17"
+          },
+          "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getStats" : {
+            "data" : {
+              "line" : 81,
+              "type" : "PUBLIC_METHOD",
+              "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getStats",
+              "name" : "getStats"
+            },
+            "type" : "FUNCTION",
+            "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getStats",
+            "label" : "getStats",
+            "createdAt" : "2026-10-11 13:59:17"
+          },
+          "FILE:C:/GIT HUB/box/target_app/PaymentService.bx" : {
+            "data" : {
+              "path" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "lines" : 86
+            },
+            "type" : "FILE",
+            "id" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+            "label" : "FILE:C:/GIT HUB/box/target_app/PaymentService.bx",
+            "createdAt" : "2026-10-11 13:59:17"
+          },
+          "FN:C:/GIT HUB/box/target_app/PaymentService.bx:fallbackCharge" : {
+            "data" : {
+              "line" : 57,
+              "type" : "PUBLIC_METHOD",
+              "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:fallbackCharge",
+              "name" : "fallbackCharge"
+            },
+            "type" : "FUNCTION",
+            "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:fallbackCharge",
+            "label" : "fallbackCharge",
+            "createdAt" : "2026-10-11 13:59:17"
+          },
+          "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f" : {
+            "data" : {
+              "attackVector" : "Config Tampering / Missing Property Injection",
+              "validationMechanism" : "DYNAMIC_PROBE",
+              "expectedImpact" : "Denegacion de servicio interna (500) por KeyNotFound / NullPointerException dentro del manejador de contingencia",
+              "targetComponent" : "@L1",
+              "createdAt" : "2026-10-11 13:59:18",
+              "hypothesisId" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+              "preconditions" : [ "Seccion de configuracion 'fallback' omitida o eliminada en tiempo de ejecucion", "Gateway externo falla provocando delegacion al manejador degradado" ],
+              "status" : "DISPROVED"
+            },
+            "type" : "HYPOTHESIS",
+            "id" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+            "label" : "Config Tampering / Missing Property Injection",
+            "createdAt" : "2026-10-11 13:59:18"
+          },
+          "TEST:HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f:135919" : {
+            "data" : {
+              "attackVector" : "Unsanitized Numeric Input Manipulation",
+              "observedError" : "",
+              "defended" : true,
+              "durationMs" : 157,
+              "reproduced" : false,
+              "rationale" : "El servicio aplico validacion defensiva (QUEUED_OFFLINE); la hipotesis de caida queda refutada.",
+              "hypothesisId" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+              "status" : "DISPROVED"
+            },
+            "type" : "TEST",
+            "id" : "TEST:HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f:135919",
+            "label" : "Emulacion DISPROVED",
+            "createdAt" : "2026-10-11 13:59:19"
+          },
+          "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f" : {
+            "data" : {
+              "attackVector" : "Unsanitized Numeric Input Manipulation",
+              "validationMechanism" : "DYNAMIC_PROBE",
+              "expectedImpact" : "Excepcion BoxCastException impidiendo procesar cobros y deteniendo transacciones",
+              "targetComponent" : "@L1",
+              "createdAt" : "2026-10-11 13:59:18",
+              "hypothesisId" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+              "preconditions" : [ "Monto transmitido con separadores o simbolos (e.g. '$1,250.00' o '2.5%')", "Aritmetica directa sin casteo defensivo ni sanitizacion previa" ],
+              "status" : "DISPROVED"
+            },
+            "type" : "HYPOTHESIS",
+            "id" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+            "label" : "Unsanitized Numeric Input Manipulation",
+            "createdAt" : "2026-10-11 13:59:18"
+          },
+          "FN:C:/GIT HUB/box/target_app/PaymentService.bx:charge" : {
+            "data" : {
+              "line" : 35,
+              "type" : "PUBLIC_METHOD",
+              "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+              "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:charge",
+              "name" : "charge"
+            },
+            "type" : "FUNCTION",
+            "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:charge",
+            "label" : "charge",
+            "createdAt" : "2026-10-11 13:59:17"
+          }
+        },
+        "exportedAt" : "2026-10-11 13:59:17"
+      },
+      "trustBoundariesCount" : 1,
+      "entryPoints" : [ {
+        "line" : 35,
+        "type" : "PUBLIC_METHOD",
+        "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+        "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:charge",
+        "name" : "charge"
+      }, {
+        "line" : 57,
+        "type" : "PUBLIC_METHOD",
+        "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+        "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:fallbackCharge",
+        "name" : "fallbackCharge"
+      }, {
+        "line" : 77,
+        "type" : "PUBLIC_METHOD",
+        "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+        "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getOfflineQueue",
+        "name" : "getOfflineQueue"
+      }, {
+        "line" : 81,
+        "type" : "PUBLIC_METHOD",
+        "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+        "id" : "FN:C:/GIT HUB/box/target_app/PaymentService.bx:getStats",
+        "name" : "getStats"
+      } ],
+      "durationMs" : 6,
+      "sensitiveOperationsCount" : 0,
+      "trustBoundaries" : [ {
+        "hasAuthCheck" : false,
+        "filePath" : "C:/GIT HUB/box/target_app/PaymentService.bx",
+        "boundaryType" : "PUBLIC_UNAUTHENTICATED_ZONE",
+        "id" : "TB:C:/GIT HUB/box/target_app/PaymentService.bx"
+      } ],
+      "sensitiveOperations" : [ ],
+      "targetPath" : "C:/GIT HUB/box/target_app/PaymentService.bx"
+    },
+    "hasFallbackRegion" : true,
+    "securityFindings" : [ ],
+    "regionStart" : 58,
+    "lineCount" : 86,
+    "exists" : true
+  },
+  "verified" : true,
+  "diagnosis" : {
+    "patchable" : true,
+    "causes" : [ {
+      "code" : "NULL_CONFIG_DEREF",
+      "scenarios" : [ "S04_FALLBACK_CONFIG_MISSING", "S07_FALLBACK_CONFIG_WRONG_TYPE" ],
+      "title" : "Desreferencia de configuracion ausente o con forma inesperada en el fallback",
+      "explanation" : "El fallback accede a variables.config.fallback.* asumiendo que la seccion existe y es una estructura. Si falta o tiene otro tipo, el acceso lanza una excepcion DENTRO del manejador de errores: la contingencia se convierte en la caida.",
+      "patchable" : true,
+      "remediation" : "Validar existencia y tipo de la seccion fallback y de cada clave, con valores por defecto seguros.",
+      "severity" : "CRITICAL",
+      "injections" : [ "S04_FALLBACK_CONFIG_MISSING (timeout + drop_fallback)", "S07_FALLBACK_CONFIG_WRONG_TYPE (timeout + wrong_type)" ],
+      "confidence" : "MEDIA (clasificado por pista del escenario)",
+      "sampleError" : "Application: The key [fallback] was not found in the struct. Valid keys are ([currency, merchantId, gateway])",
+      "location" : "PaymentService.bx:60"
+    }, {
+      "code" : "TYPE_MISMATCH_NUMERIC",
+      "scenarios" : [ "S01_GATEWAY_TIMEOUT", "S02_GATEWAY_NULL_RESPONSE", "S03_GATEWAY_BROKEN_PAYLOAD", "S05_FALLBACK_RATE_EMPTY", "S06_AMOUNT_FORMATTED_STRING" ],
+      "title" : "Aritmetica sobre valores no numericos (porcentaje como texto, monto formateado, valor vacio)",
+      "explanation" : "El recargo se multiplica directamente por un valor de configuracion tipo texto (por ejemplo 2.5%) y el monto se suma sin normalizar. Esos valores no se castean a numero, asi que el fallback revienta justo cuando el gateway cae.",
+      "patchable" : true,
+      "remediation" : "Normalizar porcentajes y montos (quitar simbolos y separadores), validar con isNumeric() y aplicar un recargo por defecto si el valor es invalido.",
+      "severity" : "CRITICAL",
+      "injections" : [ "S01_GATEWAY_TIMEOUT (timeout + none)", "S02_GATEWAY_NULL_RESPONSE (null + none)", "S03_GATEWAY_BROKEN_PAYLOAD (garbage + none)", "S05_FALLBACK_RATE_EMPTY (timeout + empty_rate)", "S06_AMOUNT_FORMATTED_STRING (timeout + numeric_rate)" ],
+      "confidence" : "ALTA (clasificado por el mensaje del runtime)",
+      "sampleError" : "BoxCastException: Can't cast [2.5%] to a Number.",
+      "location" : "PaymentService.bx:60"
+    } ],
+    "securityFindings" : [ ],
+    "inspectionFindings" : [ {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNGUARDED_CONFIG_CHAIN",
+      "line" : 60,
+      "risk" : "Cadena de acceso a configuracion sin validar existencia ni tipo"
+    }, {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNVALIDATED_NUMERIC_CONFIG",
+      "line" : 60,
+      "risk" : "Aritmetica con un valor de configuracion que podria no ser numerico"
+    }, {
+      "snippet" : "var surcharge = arguments.amount * variables.config.fallback.surchargePct;",
+      "code" : "UNNORMALIZED_INPUT_ARITHMETIC",
+      "line" : 60,
+      "risk" : "Aritmetica directa sobre un monto sin normalizar (texto, separadores, simbolos)"
+    }, {
+      "snippet" : "var total     = arguments.amount + surcharge;",
+      "code" : "UNNORMALIZED_INPUT_ARITHMETIC",
+      "line" : 61,
+      "risk" : "Aritmetica directa sobre un monto sin normalizar (texto, separadores, simbolos)"
+    }, {
+      "snippet" : "var queueName = variables.config.fallback.queueName;",
+      "code" : "UNGUARDED_CONFIG_CHAIN",
+      "line" : 62,
+      "risk" : "Cadena de acceso a configuracion sin validar existencia ni tipo"
+    } ],
+    "attackHypotheses" : [ {
+      "attackVector" : "Config Tampering / Missing Property Injection",
+      "validationMechanism" : "DYNAMIC_PROBE",
+      "expectedImpact" : "Denegacion de servicio interna (500) por KeyNotFound / NullPointerException dentro del manejador de contingencia",
+      "targetComponent" : "@L1",
+      "createdAt" : "2026-10-11 13:59:18",
+      "hypothesisId" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+      "preconditions" : [ "Seccion de configuracion 'fallback' omitida o eliminada en tiempo de ejecucion", "Gateway externo falla provocando delegacion al manejador degradado" ],
+      "status" : "DISPROVED"
+    }, {
+      "attackVector" : "Unsanitized Numeric Input Manipulation",
+      "validationMechanism" : "DYNAMIC_PROBE",
+      "expectedImpact" : "Excepcion BoxCastException impidiendo procesar cobros y deteniendo transacciones",
+      "targetComponent" : "@L1",
+      "createdAt" : "2026-10-11 13:59:18",
+      "hypothesisId" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+      "preconditions" : [ "Monto transmitido con separadores o simbolos (e.g. '$1,250.00' o '2.5%')", "Aritmetica directa sin casteo defensivo ni sanitizacion previa" ],
+      "status" : "DISPROVED"
+    } ],
+    "hasFindings" : true,
+    "llm" : {
+      "used" : false,
+      "error" : "LLM deshabilitado (sin ANTHROPIC_API_KEY o FAULTGRAPH_OFFLINE=1). Se usa el motor heuristico determinista.",
+      "model" : "claude-sonnet-5-5",
+      "text" : "",
+      "ok" : false
+    },
+    "totalFailures" : 7,
+    "localAi" : {
+      "used" : false,
+      "ok" : false
+    },
+    "knowledgeBaseReferences" : [ {
+      "date" : "2026-10-10 23:27:19",
+      "reliability" : "EMPIRICALLY_VERIFIED",
+      "source" : "FaultGraph-BX Runtime Telemetry",
+      "title" : "Incidente 20261010_232719 - Fallo Contingencia: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC",
+      "recommendations" : "Aplicar normalizacion de tipos numericos y guardas de configuracion.",
+      "codeSnippets" : [ ],
+      "scope" : "DIAGNOSTIC_HISTORY",
+      "details" : "Evidencia de reproduccion mediante ChaosEngine. Causas involucradas: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC. Verificado 100% bajo caos.",
+      "id" : "HIST-20261010_232719",
+      "summary" : "Fallo registrado en ejecucion: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC. Estado verificacion posterior: PARCHE_VERIFICADO",
+      "version" : "1.0.0",
+      "verificationLevel" : "EXPERIMENTAL_PROVEN",
+      "tags" : [ "incident", "history", "self-healing", "chaos" ],
+      "category" : "DIAGNOSTIC_HISTORY",
+      "hash" : "0e520aa9b3835577f9922863e53c0faf1e20b038c1868e8053dc3ced878a1dde",
+      "relevanceScore" : 130
+    }, {
+      "date" : "2026-10-10 23:29:57",
+      "reliability" : "EMPIRICALLY_VERIFIED",
+      "source" : "FaultGraph-BX Runtime Telemetry",
+      "title" : "Incidente 20261010_232957 - Fallo Contingencia: TYPE_MISMATCH_NUMERIC, NULL_CONFIG_DEREF",
+      "recommendations" : "Aplicar normalizacion de tipos numericos y guardas de configuracion.",
+      "codeSnippets" : [ ],
+      "scope" : "DIAGNOSTIC_HISTORY",
+      "details" : "Evidencia de reproduccion mediante ChaosEngine. Causas involucradas: TYPE_MISMATCH_NUMERIC, NULL_CONFIG_DEREF. Verificado 100% bajo caos.",
+      "id" : "HIST-20261010_232957",
+      "summary" : "Fallo registrado en ejecucion: TYPE_MISMATCH_NUMERIC, NULL_CONFIG_DEREF. Estado verificacion posterior: PARCHE_VERIFICADO",
+      "version" : "1.0.0",
+      "verificationLevel" : "EXPERIMENTAL_PROVEN",
+      "tags" : [ "incident", "history", "self-healing", "chaos" ],
+      "category" : "DIAGNOSTIC_HISTORY",
+      "hash" : "d9bb3b68204b5a8f315e99fde836ab0cb5acda5e653879b5617e72072d4e4a0e",
+      "relevanceScore" : 130
+    }, {
+      "date" : "2026-10-10 23:27:19",
+      "reliability" : "EMPIRICALLY_VERIFIED",
+      "source" : "FaultGraph-BX Runtime Telemetry",
+      "title" : "Incidente 20261010_232719 - Fallo Contingencia: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC",
+      "recommendations" : "Aplicar normalizacion de tipos numericos y guardas de configuracion.",
+      "codeSnippets" : [ ],
+      "scope" : "DIAGNOSTIC_HISTORY",
+      "details" : "Evidencia de reproduccion mediante ChaosEngine. Causas involucradas: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC. Verificado 100% bajo caos.",
+      "id" : "HIST-20261010_232719",
+      "summary" : "Fallo registrado en ejecucion: NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC. Estado verificacion posterior: PARCHE_VERIFICADO",
+      "version" : "1.0.0",
+      "verificationLevel" : "EXPERIMENTAL_PROVEN",
+      "tags" : [ "incident", "history", "self-healing", "chaos" ],
+      "category" : "DIAGNOSTIC_HISTORY",
+      "hash" : "0e520aa9b3835577f9922863e53c0faf1e20b038c1868e8053dc3ced878a1dde",
+      "relevanceScore" : 130
+    }, {
+      "date" : "2026-10-10 23:29:54",
+      "reliability" : "EMPIRICALLY_VERIFIED",
+      "source" : "FaultGraph-BX Runtime Telemetry",
+      "title" : "Incidente 20261010_232954 - Fallo Contingencia: TYPE_MISMATCH_NUMERIC",
+      "recommendations" : "Aplicar normalizacion de tipos numericos y guardas de configuracion.",
+      "codeSnippets" : [ ],
+      "scope" : "DIAGNOSTIC_HISTORY",
+      "details" : "Evidencia de reproduccion mediante ChaosEngine. Causas involucradas: TYPE_MISMATCH_NUMERIC. Verificado 100% bajo caos.",
+      "id" : "HIST-20261010_232954",
+      "summary" : "Fallo registrado en ejecucion: TYPE_MISMATCH_NUMERIC. Estado verificacion posterior: PARCHE_VERIFICADO",
+      "version" : "1.0.0",
+      "verificationLevel" : "EXPERIMENTAL_PROVEN",
+      "tags" : [ "incident", "history", "self-healing", "chaos" ],
+      "category" : "DIAGNOSTIC_HISTORY",
+      "hash" : "734691c648e74be7d6ebfd880fe6ad0c71c79c54f9cfa6536c7c757eb3ee4869",
+      "relevanceScore" : 130
+    } ]
+  }
+}

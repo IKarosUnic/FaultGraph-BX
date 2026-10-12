@@ -1,0 +1,608 @@
+/**
+ * RepositoryScanner - Motor determinista y asistido por IA para el analisis
+ * estatico, deteccion de errores y auditoria de vulnerabilidades en repositorios.
+ *
+ * Principios:
+ *   1. 100% BoxLang nativo.
+ *   2. Filtro primario determinista (microsegundos, 0 tokens) para sintaxis,
+ *      patrones inseguros, desreferencias y secretos hardcodeados.
+ *   3. IA local especializada (Qwen2.5-Coder 3B) bajo demanda para auditoria semantica.
+ *   4. Validador Independiente para eliminar alucinaciones antes del reporte.
+ */
+class {
+
+    public any function init( required any config ) {
+        variables.config       = arguments.config;
+        variables.validator    = new models.IndependentValidator( arguments.config );
+        variables.ai           = new models.LocalSecurityAI( arguments.config );
+        variables.sandbox      = new models.SecuritySandbox( arguments.config );
+        variables.parser       = new ortus.boxlang.compiler.parser.BoxParser();
+        variables.astAnalyzer  = new models.AstSecurityAnalyzer();
+        variables.detector     = new models.language.LanguageDetector( arguments.config );
+        variables.orchestrator = new models.orchestration.AdaptiveOrchestrator( arguments.config );
+        return this;
+    }
+
+    public any function getDetector() { return variables.detector; }
+    public any function getOrchestrator() { return variables.orchestrator; }
+
+    /**
+     * Escanea un repositorio poliglota completo (todos los lenguajes detectados).
+     */
+    public struct function scanPolyglotDirectory( required string targetPath, boolean useAi = true ) {
+        var t0 = getTickCount();
+        var safePath = variables.sandbox.resolveSafePath( arguments.targetPath );
+        if ( !directoryExists( safePath ) ) {
+            if ( fileExists( safePath ) ) {
+                return scanFile( safePath, arguments.useAi );
+            }
+            return { "ok": false, "error": "El directorio no existe: " & safePath, "files": [] };
+        }
+
+        var census = variables.detector.censusRepository( safePath );
+        var supportedExtensions = "*.bx|*.bxs|*.cfc|*.cfm|*.java|*.py|*.js|*.ts|*.jsx|*.tsx|*.c|*.cpp|*.h|*.hpp|*.go|*.rs|*.php|*.html";
+        var files = directoryList( safePath, true, "path", supportedExtensions );
+        var results = [];
+        var totalIssues = 0;
+        var cleanFiles = 0;
+        var vulnFiles = 0;
+        var sevSummary = { "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0 };
+
+        for ( var f in files ) {
+            var normF = replace( f, "\", "/", "all" );
+            var normSafe = replace( safePath, "\", "/", "all" );
+            var relPath = replace( normF, normSafe, "" );
+            if ( findNoCase( ".git", relPath ) || findNoCase( "node_modules", relPath ) || findNoCase( "temp", relPath ) || findNoCase( "reports", relPath ) || findNoCase( ".boxlang-cache", relPath ) ) {
+                continue;
+            }
+
+            var fileRes = scanFile( f, arguments.useAi );
+            arrayAppend( results, fileRes );
+
+            if ( fileRes.clean ) {
+                cleanFiles++;
+            } else {
+                vulnFiles++;
+            }
+
+            totalIssues = totalIssues + arrayLen( fileRes.issues );
+            for ( var sev in fileRes.severityCounts ) {
+                if ( structKeyExists( sevSummary, sev ) ) {
+                    sevSummary[ sev ] = sevSummary[ sev ] + fileRes.severityCounts[ sev ];
+                }
+            }
+        }
+
+        // Correlacion trans-modulo si el proyecto es poliglota
+        var crossModuleIssues = [];
+        if ( census.isMultiLanguage ) {
+            crossModuleIssues = variables.orchestrator.correlateCrossModuleContracts( results );
+            for ( var cmIss in crossModuleIssues ) {
+                totalIssues++;
+                if ( structKeyExists( sevSummary, cmIss.severity ) ) {
+                    sevSummary[ cmIss.severity ] = sevSummary[ cmIss.severity ] + 1;
+                }
+            }
+        }
+
+        return {
+            "ok"                : true,
+            "targetPath"        : safePath,
+            "isPolyglot"        : true,
+            "census"            : census,
+            "totalFiles"        : arrayLen( results ),
+            "cleanFiles"        : cleanFiles,
+            "vulnerableFiles"   : vulnFiles,
+            "totalIssues"       : totalIssues,
+            "durationMs"        : getTickCount() - t0,
+            "summaryBySeverity" : sevSummary,
+            "crossModuleIssues" : crossModuleIssues,
+            "files"             : results
+        };
+    }
+
+    /**
+     * Escanea un directorio completo recursivamente en busca de fallos y vulnerabilidades.
+     *
+     * @targetPath Directorio raiz del repositorio a escanear
+     * @useAi      Activa o desactiva la auditoria semantica por IA bajo demanda
+     * @filter     Filtro de extensiones o 'all'/'polyglot' para todos los lenguajes soportados
+     */
+    public struct function scanDirectory( required string targetPath, boolean useAi = true, string filter = "*.bx|*.bxs|*.cfc|*.cfm" ) {
+        if ( arguments.filter == "all" || arguments.filter == "*" || arguments.filter == "polyglot" ) {
+            return scanPolyglotDirectory( arguments.targetPath, arguments.useAi );
+        }
+        var t0 = getTickCount();
+        var safePath = variables.sandbox.resolveSafePath( arguments.targetPath );
+
+        if ( !directoryExists( safePath ) ) {
+            // Si es un archivo individual, escanear el archivo directamente
+            if ( fileExists( safePath ) ) {
+                var singleRes = scanFile( safePath, arguments.useAi );
+                return {
+                    "ok"             : true,
+                    "targetPath"     : safePath,
+                    "totalFiles"     : 1,
+                    "scannedFiles"   : 1,
+                    "cleanFiles"     : singleRes.clean ? 1 : 0,
+                    "vulnerableFiles": singleRes.clean ? 0 : 1,
+                    "totalIssues"    : arrayLen( singleRes.issues ),
+                    "durationMs"     : getTickCount() - t0,
+                    "files"          : [ singleRes ],
+                    "summaryBySeverity": singleRes.severityCounts
+                };
+            }
+            return {
+                "ok"         : false,
+                "error"      : "El directorio o archivo no existe: " & safePath,
+                "targetPath" : safePath,
+                "files"      : []
+            };
+        }
+
+        var files = directoryList( safePath, true, "path", arguments.filter );
+        var results = [];
+        var totalIssues = 0;
+        var cleanFiles = 0;
+        var vulnFiles = 0;
+        var sevSummary = { "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0 };
+
+        for ( var f in files ) {
+            // Omitir directorios ignorados tipicos (.git, node_modules, temp, reports)
+            var normF = replace( f, "\", "/", "all" );
+            var normSafe = replace( safePath, "\", "/", "all" );
+            var relPath = replace( normF, normSafe, "" );
+            if ( findNoCase( ".git", relPath ) || findNoCase( "node_modules", relPath ) || findNoCase( "temp", relPath ) || findNoCase( "reports", relPath ) || findNoCase( ".boxlang-cache", relPath ) ) {
+                continue;
+            }
+
+            var fileRes = scanFile( f, arguments.useAi );
+            arrayAppend( results, fileRes );
+
+            if ( fileRes.clean ) {
+                cleanFiles = cleanFiles + 1;
+            } else {
+                vulnFiles = vulnFiles + 1;
+            }
+
+            totalIssues = totalIssues + arrayLen( fileRes.issues );
+            for ( var sev in fileRes.severityCounts ) {
+                if ( structKeyExists( sevSummary, sev ) ) {
+                    sevSummary[ sev ] = sevSummary[ sev ] + fileRes.severityCounts[ sev ];
+                }
+            }
+        }
+
+        return {
+            "ok"               : true,
+            "targetPath"       : safePath,
+            "totalFiles"       : arrayLen( results ),
+            "cleanFiles"       : cleanFiles,
+            "vulnerableFiles"  : vulnFiles,
+            "totalIssues"      : totalIssues,
+            "durationMs"       : getTickCount() - t0,
+            "summaryBySeverity": sevSummary,
+            "files"            : results
+        };
+    }
+
+    /**
+     * Escanea un archivo individual aplicando reglas deterministas e IA bajo demanda.
+     */
+    public struct function scanFile( required string filePath, boolean useAi = true ) {
+        var safePath = variables.sandbox.resolveSafePath( arguments.filePath );
+        if ( !fileExists( safePath ) ) {
+            return { "ok": false, "filePath": safePath, "error": "Archivo no encontrado" };
+        }
+
+        var content = fileRead( safePath );
+        var lines = listToArray( content, char( 10 ), true );
+        var issues = [];
+        var sevCounts = { "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0 };
+
+        var seenIssues = {};
+        var recordIssue = ( struct iss ) => {
+            var key = iss.code & "@" & iss.line;
+            if ( structKeyExists( seenIssues, key ) ) {
+                return;
+            }
+            seenIssues[ key ] = true;
+            arrayAppend( issues, iss );
+            if ( structKeyExists( sevCounts, iss.severity ) ) {
+                sevCounts[ iss.severity ] = sevCounts[ iss.severity ] + 1;
+            }
+        };
+
+        // -------------------------------------------------------------
+        // NIVEL 0: DETERMINACION DE LENGUAJE Y ANALISIS POLIGLOTA
+        // -------------------------------------------------------------
+        var lowerPath = lcase( safePath );
+        var isBxFile = ( right( lowerPath, 3 ) == ".bx" || right( lowerPath, 4 ) == ".bxs" || right( lowerPath, 4 ) == ".cfc" || right( lowerPath, 4 ) == ".cfm" );
+        if ( !isBxFile ) {
+            var polyRes = variables.orchestrator.analyzeFile( safePath, content );
+            for ( var pIss in polyRes.issues ) {
+                recordIssue( pIss );
+            }
+            return {
+                "ok"            : true,
+                "filePath"      : safePath,
+                "fileName"      : getFileFromPath( safePath ),
+                "detection"     : polyRes.detection,
+                "language"      : polyRes.detection.language,
+                "dialect"       : polyRes.detection.dialect,
+                "confidence"    : polyRes.detection.confidence,
+                "isMixed"       : polyRes.detection.isMixed,
+                "mixedTech"     : polyRes.detection.mixedTechnologies,
+                "totalLines"    : arrayLen( lines ),
+                "clean"         : arrayLen( issues ) == 0,
+                "issueCount"    : arrayLen( issues ),
+                "severityCounts": sevCounts,
+                "issues"        : issues,
+                "aiAudit"       : { "ok": false, "raw": {}, "issues": [] }
+            };
+        }
+
+        if ( isBxFile && len( trim( content ) ) > 0 ) {
+            try {
+                var javaFile = createObject( "java", "java.io.File" ).init( safePath );
+                var parseRes = variables.parser.parse( javaFile, right( lowerPath, 3 ) == ".bx" );
+                if ( !parseRes.isCorrect() ) {
+                    for ( var issue in parseRes.getIssues() ) {
+                        var pos = issue.getPosition();
+                        var lineNum = ( !isNull( pos ) && !isNull( pos.getStart() ) ) ? pos.getStart().getLine() : 1;
+                        var evidenceLine = ( arrayLen( lines ) > 0 && lineNum >= 1 ) ? ( lines[ min( lineNum, arrayLen( lines ) ) ] ?: "" ) : "";
+                        var synIss = {
+                            "line"       : max( 1, lineNum ),
+                            "code"       : "SYNTAX_ERROR",
+                            "severity"   : "CRITICAL",
+                            "description": "Error sintactico detectado por BoxParser: " & issue.getMessage(),
+                            "evidence"   : evidenceLine,
+                            "remediation": "Corregir la sintaxis segun las especificaciones del lenguaje BoxLang."
+                        };
+                        recordIssue( synIss );
+                    }
+                } else if ( structKeyExists( variables, "astAnalyzer" ) && variables.astAnalyzer.isAvailable() ) {
+                    var astFindings = variables.astAnalyzer.analyze( parseRes.getRoot(), lines );
+                    for ( var astIss in astFindings ) {
+                        recordIssue( astIss );
+                    }
+                }
+            } catch ( any parseErr ) {
+                // Continuar de forma segura con comprobaciones deterministas
+            }
+        }
+
+        // -------------------------------------------------------------
+        // NIVEL 1: COMPROBACIONES DETERMINISTAS DE REGLAS (AST / TEXTO)
+        // -------------------------------------------------------------
+        var inBlockComment = false;
+        var lockDepth = 0;
+        for ( var i = 1; i <= arrayLen( lines ); i = i + 1 ) {
+            var line = lines[ i ];
+            var trimmed = trim( line );
+
+            // Gestion de comentarios multiline /* ... */
+            if ( inBlockComment ) {
+                if ( find( "*/", trimmed ) > 0 ) {
+                    inBlockComment = false;
+                }
+                continue;
+            }
+            if ( left( trimmed, 2 ) == "/*" ) {
+                if ( find( "*/", trimmed ) == 0 ) {
+                    inBlockComment = true;
+                }
+                continue;
+            }
+            if ( left( trimmed, 2 ) == "//" || left( trimmed, 1 ) == "*" ) {
+                continue;
+            }
+
+            // Quitar comentarios al final de linea sin mutilar cadenas ("https://...")
+            var cleanLine = line;
+            var inSingleQuotes = false;
+            var inDoubleQuotes = false;
+            var commentPos = 0;
+            for ( var ci = 1; ci < len( cleanLine ); ci++ ) {
+                var ch = mid( cleanLine, ci, 1 );
+                if ( ch == """" && !inSingleQuotes ) {
+                    inDoubleQuotes = !inDoubleQuotes;
+                } else if ( ch == "'" && !inDoubleQuotes ) {
+                    inSingleQuotes = !inSingleQuotes;
+                } else if ( !inSingleQuotes && !inDoubleQuotes && ch == "/" && mid( cleanLine, ci + 1, 1 ) == "/" ) {
+                    commentPos = ci;
+                    break;
+                }
+            }
+            if ( commentPos > 0 ) {
+                cleanLine = left( cleanLine, commentPos - 1 );
+            }
+            var cleanTrimmed = trim( cleanLine );
+            if ( !len( cleanTrimmed ) ) {
+                continue;
+            }
+
+            // Seguimiento de bloques sincronizados (lock / cflock)
+            if ( reFindNoCase( "\b(lock|cflock)\b", cleanLine ) && find( "{", cleanLine ) ) {
+                lockDepth++;
+            } else if ( lockDepth > 0 ) {
+                for ( var bIdx = 1; bIdx <= len( cleanLine ); bIdx++ ) {
+                    var bChar = mid( cleanLine, bIdx, 1 );
+                    if ( bChar == "{" ) { lockDepth++; }
+                    else if ( bChar == "}" ) { lockDepth = max( 0, lockDepth - 1 ); }
+                }
+            }
+
+            // Contexto previo reciente (lookbehind hasta 5 lineas) para comprobar guardias condicionales
+            var priorContext = "";
+            var minLookback = max( 1, i - 5 );
+            for ( var pIdx = minLookback; pIdx < i; pIdx++ ) {
+                priorContext = priorContext & " " & lines[ pIdx ];
+            }
+
+            // 1. Invocaciones peligrosas al SO o reflexion no autorizada
+            if ( reFindNoCase( "(Runtime\.getRuntime\(\)|ProcessBuilder|java\.lang\.reflect|\bcfexecute\b|executeCommandLine)", cleanLine ) ) {
+                var iss1 = {
+                    "line"       : i,
+                    "code"       : "DANGEROUS_SYSTEM_CALL",
+                    "severity"   : "CRITICAL",
+                    "description": "Uso de reflexion profunda o ejecucion de comandos del sistema operativo (CWE-78 / CWE-676).",
+                    "evidence"   : trimmed,
+                    "remediation": "Encapsular la logica en servicios seguros con permisos minimos."
+                };
+                recordIssue( iss1 );
+            }
+
+            // 2. Secretos y credenciales expuestas en duro (asignacion o clave de struct)
+            if ( reFindNoCase( "(api[_-]?key|secret[_-]?token|auth[_-]?token|jwt[_-]?secret|password)\s*[:=]\s*['""][a-zA-Z0-9_\-\.]{16,}['""]", cleanLine ) ) {
+                var iss2 = {
+                    "line"       : i,
+                    "code"       : "HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "description": "Posible clave de API, secreto o credencial expuesta en codigo estatico (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Extraer a variables de entorno mediante readEnv() o gestor de secretos seguro."
+                };
+                recordIssue( iss2 );
+            }
+
+            // 3. Desreferenciacion ciega de estructuras o configuraciones
+            if ( reFindNoCase( "variables\.config\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+", cleanLine ) && !find( "structKeyExists", cleanLine ) && !find( "?.", cleanLine ) ) {
+                var hasPriorStructGuard = findNoCase( "structKeyExists", priorContext ) > 0 && findNoCase( "config", priorContext ) > 0;
+                if ( !hasPriorStructGuard ) {
+                    var iss3 = {
+                        "line"       : i,
+                        "code"       : "UNPROTECTED_CONFIG_DEREF",
+                        "severity"   : "HIGH",
+                        "description": "Acceso anidado a struct sin comprobacion de existencia ni valor por defecto (CWE-476).",
+                        "evidence"   : trimmed,
+                        "remediation": "Validar con structKeyExists() o utilizar operador de navegacion segura con fallback."
+                    };
+                    recordIssue( iss3 );
+                }
+            }
+
+            // 4. Aritmetica no normalizada con montos o porcentajes
+            var hasNumericOp = reFindNoCase( "(arguments\.[a-zA-Z0-9_]+\s*[*+\-/]|surchargePct\s*;)", cleanLine );
+            var hasTypedNumericArg = reFindNoCase( "(required\s+numeric|\(\s*numeric\s+[a-zA-Z0-9_]+|,\s*numeric\s+[a-zA-Z0-9_]+)", cleanLine ) > 0
+                || reFindNoCase( "(required\s+numeric|\(\s*numeric\s+[a-zA-Z0-9_]+|,\s*numeric\s+[a-zA-Z0-9_]+)", priorContext ) > 0;
+            if ( hasNumericOp && !find( "isNumeric", cleanLine ) && !hasTypedNumericArg ) {
+                var hasPriorNumericGuard = findNoCase( "isNumeric", priorContext ) > 0;
+                if ( !hasPriorNumericGuard ) {
+                    var iss4 = {
+                        "line"       : i,
+                        "code"       : "UNVALIDATED_NUMERIC_CAST",
+                        "severity"   : "HIGH",
+                        "description": "Operacion aritmetica directa sin validacion isNumeric() ni limpieza de caracteres (CWE-20).",
+                        "evidence"   : trimmed,
+                        "remediation": "Normalizar montos y porcentajes verificando isNumeric() antes de calcular."
+                    };
+                    recordIssue( iss4 );
+                }
+            }
+
+            // 5. Bloques catch vacios que silencian errores (unilinea o multilinea)
+            if ( reFindNoCase( "catch\s*\(", cleanLine ) ) {
+                var isEmptyCatch = false;
+                var catchIdx = findNoCase( "catch", cleanLine );
+                var afterCatch = mid( cleanLine, catchIdx, len( cleanLine ) - catchIdx + 1 );
+                if ( reFindNoCase( "catch\s*\([^)]*\)\s*\{\s*\}", afterCatch ) ) {
+                    isEmptyCatch = true;
+                } else if ( find( "{", afterCatch ) > 0 && find( "}", afterCatch ) == 0 ) {
+                    // Verificar si las siguientes lineas hasta '}' estan vacias o son solo comentarios
+                    var lookAhead = i + 1;
+                    var foundStatements = false;
+                    var closed = false;
+                    while ( lookAhead <= arrayLen( lines ) ) {
+                        var nextRaw = lines[ lookAhead ];
+                        var cPos = find( "//", nextRaw );
+                        if ( cPos > 0 ) {
+                            nextRaw = left( nextRaw, cPos - 1 );
+                        }
+                        var nextTrimmed = trim( nextRaw );
+                        if ( find( "}", nextTrimmed ) > 0 ) {
+                            var beforeClose = trim( listFirst( nextTrimmed, "}" ) );
+                            if ( len( beforeClose ) > 0 && left( beforeClose, 2 ) != "/*" && left( beforeClose, 1 ) != "*" ) {
+                                foundStatements = true;
+                            }
+                            closed = true;
+                            break;
+                        }
+                        if ( len( nextTrimmed ) > 0 && left( nextTrimmed, 2 ) != "/*" && left( nextTrimmed, 1 ) != "*" ) {
+                            foundStatements = true;
+                            break;
+                        }
+                        lookAhead++;
+                    }
+                    if ( closed && !foundStatements ) {
+                        isEmptyCatch = true;
+                    }
+                }
+                if ( isEmptyCatch ) {
+                    var iss5 = {
+                        "line"       : i,
+                        "code"       : "EMPTY_CATCH_BLOCK",
+                        "severity"   : "MEDIUM",
+                        "description": "Bloque catch vacio que traga excepciones sin registrar telemetria.",
+                        "evidence"   : trimmed,
+                        "remediation": "Registrar el error o relanzar excepcion controlada para visibilidad operacional."
+                    };
+                    recordIssue( iss5 );
+                }
+            }
+
+            // 6. Concatenacion dinamica o interpolacion en consultas SQL (Inyeccion SQL - CWE-89)
+            var hasSqlInjection = reFindNoCase( "(queryExecute\s*\([^,;)]*(&|\+)[^,;)]*|(\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b)[^;]*(&|\+)[^;]*(\bWHERE\b|\bVALUES\b|\bSET\b))", cleanLine )
+                || ( findNoCase( "queryExecute", cleanLine ) && find( char( 35 ), cleanLine ) );
+            if ( hasSqlInjection ) {
+                var iss6 = {
+                    "line"       : i,
+                    "code"       : "SQL_INJECTION_RISK",
+                    "severity"   : "CRITICAL",
+                    "description": "Concatenacion dinamica o interpolacion en sentencia SQL sin parametrizar (CWE-89).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar queryExecute( sql, params ) con bindings de parametros o cfqueryparam."
+                };
+                recordIssue( iss6 );
+            }
+
+            // 7. Fugas de recursos y streams I/O no cerrados (CWE-775 / CWE-404)
+            if ( reFindNoCase( "(new\s+(FileInputStream|FileOutputStream|FileReader|FileWriter|Socket)|urlConnection\.getInputStream\(\)|conn\.getOutputStream\(\))", cleanLine ) && !find( ".close()", cleanLine ) && !find( "try", cleanLine ) ) {
+                var hasSubsequentClose = false;
+                var maxLookAhead = min( arrayLen( lines ), i + 12 );
+                for ( var fIdx = i + 1; fIdx <= maxLookAhead; fIdx++ ) {
+                    var fLine = lines[ fIdx ];
+                    if ( findNoCase( ".close()", fLine ) > 0 || ( findNoCase( "finally", fLine ) > 0 && findNoCase( "close", fLine ) > 0 ) ) {
+                        hasSubsequentClose = true;
+                        break;
+                    }
+                }
+                if ( !hasSubsequentClose ) {
+                    var iss7 = {
+                        "line"       : i,
+                        "code"       : "RESOURCE_LEAK_RISK",
+                        "severity"   : "HIGH",
+                        "description": "Apertura de stream o recurso I/O sin cierre garantizado en bloque try/finally (CWE-775 / CWE-404).",
+                        "evidence"   : trimmed,
+                        "remediation": "Envolver la apertura y lectura del stream en try...finally asegurando la llamada a .close()."
+                    };
+                    recordIssue( iss7 );
+                }
+            }
+
+            // 8. Mutacion directa de ambito global sin bloqueo (CWE-362 / Race Condition)
+            if ( reFindNoCase( "(\bapplication\.[a-zA-Z0-9_]+\s*=\s*[^=]|\bserver\.[a-zA-Z0-9_]+\s*=\s*[^=])", cleanLine ) && !find( "lock", cleanLine ) && !find( "cflock", cleanLine ) ) {
+                if ( lockDepth <= 0 ) {
+                    var iss8 = {
+                        "line"       : i,
+                        "code"       : "UNSAFE_CONCURRENT_MUTATION",
+                        "severity"   : "HIGH",
+                        "description": "Mutacion directa de ambito global (application/server) sin sincronizacion ni bloqueo (CWE-362 / Race Condition).",
+                        "evidence"   : trimmed,
+                        "remediation": "Utilizar cflock / lock sincronizado o estructuras concurrentes (ConcurrentHashMap, AtomicLong)."
+                    };
+                    recordIssue( iss8 );
+                }
+            }
+
+            // 9. Deserializacion binaria no segura de objetos Java (CWE-502)
+            if ( reFindNoCase( "(ObjectInputStream|readObject)", cleanLine ) ) {
+                var iss9 = {
+                    "line"       : i,
+                    "code"       : "INSECURE_DESERIALIZATION",
+                    "severity"   : "CRITICAL",
+                    "description": "Deserializacion binaria no segura de objetos Java que permite ejecucion remota de codigo (CWE-502).",
+                    "evidence"   : trimmed,
+                    "remediation": "Evitar ObjectInputStream o implementar ObjectInputFilter con lista blanca de clases permitidas."
+                };
+                recordIssue( iss9 );
+            }
+        }
+
+        // -------------------------------------------------------------
+        // NIVEL 2: AUDITORIA SEMANTICA IA LOCAL 3B (BAJO DEMANDA)
+        // -------------------------------------------------------------
+        var aiAudit = { "ok": false, "raw": {}, "issues": [] };
+        if ( arguments.useAi && variables.config.isLocalAiAvailable() ) {
+            // Solo auditamos con IA si el archivo contiene logica relevante (<300 lineas para eficiencia)
+            if ( arrayLen( lines ) <= 300 && ( findNoCase( "function", content ) || findNoCase( "class", content ) ) ) {
+                var aiRes = variables.ai.auditSuspiciousCode( content );
+                if ( aiRes.ok ) {
+                    var candidateFindings = structKeyExists( aiRes, "findings" ) ? aiRes.findings : ( structKeyExists( aiRes, "issues" ) ? aiRes.issues : [] );
+                    var auditVal = variables.validator.validateAuditFindings( content, candidateFindings );
+                    for ( var v in auditVal.validated ) {
+                        var aiIssue = {
+                            "line"       : 0,
+                            "code"       : "AI_SEMANTIC_RISK",
+                            "severity"   : "HIGH",
+                            "description": "[IA Local 3B Validada] " & v.risk,
+                            "evidence"   : v.snippet,
+                            "remediation": "Revision semantica segun recomendacion del modelo."
+                        };
+                        recordIssue( aiIssue );
+                    }
+                    aiAudit = { "ok": true, "raw": aiRes, "validated": auditVal };
+                }
+            }
+        }
+
+        return {
+            "ok"            : true,
+            "filePath"      : safePath,
+            "fileName"      : getFileFromPath( safePath ),
+            "language"      : "BoxLang",
+            "dialect"       : "BoxLang",
+            "detection"     : { "language": "BoxLang", "dialect": "BoxLang", "confidence": 1.0, "isMixed": false, "mixedTechnologies": [] },
+            "totalLines"    : arrayLen( lines ),
+            "clean"         : arrayLen( issues ) == 0,
+            "issueCount"    : arrayLen( issues ),
+            "severityCounts": sevCounts,
+            "issues"        : issues,
+            "aiAudit"       : aiAudit
+        };
+    }
+
+    /**
+     * Renderiza un reporte consolidado en Markdown del escaneo.
+     */
+    public string function renderMarkdownReport( required struct scanResult ) {
+        var h2 = repeatString( char( 35 ), 2 ) & " ";
+        var h3 = repeatString( char( 35 ), 3 ) & " ";
+        var sb = [];
+        arrayAppend( sb, h2 & "Reporte de Escaneo de Repositorio - FaultGraph-BX" );
+        arrayAppend( sb, "" );
+        arrayAppend( sb, "- **Ruta objetivo:** `" & arguments.scanResult.targetPath & "`" );
+        arrayAppend( sb, "- **Archivos evaluados:** " & arguments.scanResult.totalFiles );
+        arrayAppend( sb, "- **Archivos con problemas:** " & arguments.scanResult.vulnerableFiles & " / " & arguments.scanResult.totalFiles );
+        arrayAppend( sb, "- **Total de problemas detectados:** " & arguments.scanResult.totalIssues );
+        arrayAppend( sb, "- **Tiempo de analisis:** " & arguments.scanResult.durationMs & " ms" );
+        arrayAppend( sb, "" );
+
+        var s = arguments.scanResult.summaryBySeverity;
+        arrayAppend( sb, h3 & "Resumen por Severidad" );
+        arrayAppend( sb, "| Severidad | Conteo |" );
+        arrayAppend( sb, "| :--- | :---: |" );
+        arrayAppend( sb, "| CRITICAL | " & ( structKeyExists( s, "CRITICAL" ) ? s.CRITICAL : 0 ) & " |" );
+        arrayAppend( sb, "| HIGH     | " & ( structKeyExists( s, "HIGH" ) ? s.HIGH : 0 ) & " |" );
+        arrayAppend( sb, "| MEDIUM   | " & ( structKeyExists( s, "MEDIUM" ) ? s.MEDIUM : 0 ) & " |" );
+        arrayAppend( sb, "| LOW      | " & ( structKeyExists( s, "LOW" ) ? s.LOW : 0 ) & " |" );
+        arrayAppend( sb, "" );
+
+        arrayAppend( sb, h3 & "Detalle por Archivo" );
+        for ( var f in arguments.scanResult.files ) {
+            if ( f.clean ) {
+                arrayAppend( sb, '- [OK] **`' & f.fileName & '`**: Sin problemas detectados.' );
+            } else {
+                arrayAppend( sb, '- [WARN] **`' & f.fileName & '`**: ' & f.issueCount & ' problema(s) encontrado(s):' );
+                for ( var iss in f.issues ) {
+                    arrayAppend( sb, '  - **[Linea ' & iss.line & ' | ' & iss.severity & '] ' & iss.code & '**: ' & iss.description );
+                    arrayAppend( sb, '    - *Evidencia:* `' & iss.evidence & '`' );
+                    arrayAppend( sb, '    - *Remediacion:* ' & iss.remediation );
+                }
+            }
+        }
+
+        return arrayToList( sb, char( 10 ) );
+    }
+
+}

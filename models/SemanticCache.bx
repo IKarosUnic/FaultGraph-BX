@@ -1,0 +1,171 @@
+/**
+ * SemanticCache - Cache semantica y de AST en memoria L1 para FaultGraph-BX.
+ *
+ * Mision:
+ *   Provee almacenamiento en memoria ultrarrapido O(1) respaldado por ConcurrentHashMap de la JVM.
+ *   Elimina I/O repetitivo de disco en inspeccion estatica de codigo y re-evaluacion de firmas de diagnostico.
+ *
+ * Caracteristicas:
+ *   - Thread-safe para entornos concurrentes y Virtual Threads.
+ *   - Metricas de telemetria en tiempo real (hits, misses, ratio, tamanio).
+ *   - Invalidacion inteligente basada en marca temporal de modificacion de archivo (lastModified).
+ */
+class {
+
+    public any function init( numeric maxCapacity = 2000 ) {
+        variables.store       = createObject( "java", "java.util.concurrent.ConcurrentHashMap" ).init();
+        variables.maxCapacity = arguments.maxCapacity;
+        variables.hits        = 0;
+        variables.misses      = 0;
+        variables.enabled     = true;
+        return this;
+    }
+
+    public numeric function getMaxCapacity() {
+        return variables.maxCapacity;
+    }
+
+    public void function setMaxCapacity( required numeric maxCapacity ) {
+        variables.maxCapacity = arguments.maxCapacity;
+    }
+
+    public boolean function isEnabled() {
+        return variables.enabled;
+    }
+
+    public void function setEnabled( required boolean enabled ) {
+        variables.enabled = arguments.enabled;
+    }
+
+    public boolean function has( required string key ) {
+        if ( !variables.enabled ) {
+            return false;
+        }
+        return variables.store.containsKey( arguments.key );
+    }
+
+    public any function get( required string key ) {
+        if ( !variables.enabled || !has( arguments.key ) ) {
+            variables.misses = variables.misses + 1;
+            return null;
+        }
+        variables.hits = variables.hits + 1;
+        return variables.store.get( arguments.key );
+    }
+
+    public void function put( required string key, required any value ) {
+        if ( !variables.enabled || isNull( arguments.value ) ) {
+            return;
+        }
+
+        // Desalojo defensivo si se supera la capacidad maxima para prevenir fugas de memoria
+        if ( variables.store.size() >= variables.maxCapacity && !variables.store.containsKey( arguments.key ) ) {
+            var keys = variables.store.keys();
+            var evicted = 0;
+            while ( keys.hasMoreElements() && evicted < 50 ) {
+                variables.store.remove( keys.nextElement() );
+                evicted = evicted + 1;
+            }
+        }
+
+        variables.store.put( arguments.key, arguments.value );
+        try {
+            var boxCache = getBoxCache();
+            if ( !isNull( boxCache ) ) {
+                boxCache.set( arguments.key, arguments.value );
+            }
+        } catch ( any ignore ) {}
+    }
+
+    public void function remove( required string key ) {
+        variables.store.remove( arguments.key );
+        try {
+            var boxCache = getBoxCache();
+            if ( !isNull( boxCache ) ) {
+                boxCache.clear( arguments.key );
+            }
+        } catch ( any ignore ) {}
+    }
+
+    public void function clear() {
+        variables.store.clear();
+        variables.hits   = 0;
+        variables.misses = 0;
+        try {
+            var boxCache = getBoxCache();
+            if ( !isNull( boxCache ) ) {
+                boxCache.clear();
+            }
+        } catch ( any ignore ) {}
+    }
+
+    /**
+     * Obtiene o registra el proveedor nativo de cache de BoxLang para interoperabilidad del runtime.
+     */
+    public any function getBoxCache() {
+        try {
+            var rt           = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+            var cacheService = rt.getCacheService();
+            var keyClass     = createObject( "java", "ortus.boxlang.runtime.scopes.Key" );
+            return cacheService.createCacheIfAbsent( keyClass.of( "faultgraph-l1" ), keyClass.of( "boxCacheProvider" ), {} );
+        } catch ( any e ) {
+            return null;
+        }
+    }
+
+    public numeric function size() {
+        return variables.store.size();
+    }
+
+    public struct function getStats() {
+        var total = variables.hits + variables.misses;
+        var ratio = total > 0 ? round( ( variables.hits / total ) * 10000 ) / 100 : 0;
+        return {
+            "size"     : size(),
+            "hits"     : variables.hits,
+            "misses"   : variables.misses,
+            "requests" : total,
+            "hitRatio" : ratio
+        };
+    }
+
+    /**
+     * Obtiene la inspeccion de codigo desde la cache o computa y almacena si es nueva o cambio el archivo.
+     */
+    public any function getOrComputeAst( required string filePath, required any computeClosure ) {
+        if ( !variables.enabled || !fileExists( arguments.filePath ) ) {
+            return arguments.computeClosure( arguments.filePath );
+        }
+
+        var javaFile     = createObject( "java", "java.io.File" ).init( arguments.filePath );
+        var lastModified = javaFile.lastModified();
+        var cacheKey     = "ast:" & arguments.filePath & ":" & lastModified;
+
+        if ( has( cacheKey ) ) {
+            return get( cacheKey );
+        }
+
+        var computed = arguments.computeClosure( arguments.filePath );
+        put( cacheKey, computed );
+        return computed;
+    }
+
+    /**
+     * Obtiene el diagnostico de causa raiz para una firma de fallo compuesta o computa si no existe.
+     */
+    public any function getOrComputeDiagnosis( required string signatureKey, required any computeClosure ) {
+        if ( !variables.enabled ) {
+            return arguments.computeClosure();
+        }
+
+        var cacheKey = "diag:" & arguments.signatureKey;
+        if ( has( cacheKey ) ) {
+            return get( cacheKey );
+        }
+
+        var computed = arguments.computeClosure();
+        put( cacheKey, computed );
+        return computed;
+    }
+
+}

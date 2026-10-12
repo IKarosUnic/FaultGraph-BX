@@ -1,0 +1,141 @@
+/**
+ * MultiEngineCoordinator - Coordinador de Sinergia entre Motores Especializados para FaultGraph-BX.
+ *
+ * Mision:
+ *   1. Selecciona dinamicamente herramientas segun lenguaje, tipo de problema y evidencia.
+ *   2. Prioriza motores deterministas primarios (0 tokens, microsegundos) y activa IA bajo demanda.
+ *   3. Consolida hallazgos provenientes de multiples fuentes (AST, Linters, Reglas, Caos e IA).
+ *   4. Identifica concordancias y contradicciones entre analizadores.
+ *   5. Deduplica hallazgos y modula la confianza: la coincidencia entre herramientas aumenta
+ *      la evidencia, pero no sustituye la verificacion empirica ejecutable.
+ */
+class {
+
+    public any function init( any config = null, any toolRegistry = null ) {
+        variables.config        = structKeyExists( arguments, "config" ) && !isNull( arguments.config ) ? arguments.config : new config.Config( getCurrentTemplatePath() );
+        variables.toolRegistry  = structKeyExists( arguments, "toolRegistry" ) && !isNull( arguments.toolRegistry ) ? arguments.toolRegistry : new models.orchestration.ToolCapabilityRegistry( variables.config );
+        variables.validator     = new models.IndependentValidator( variables.config );
+        return this;
+    }
+
+    public any function getToolRegistry() {
+        return variables.toolRegistry;
+    }
+
+    /**
+     * Coordina el analisis multipaso y combina resultados heterogeneos en una sintesis coherente.
+     */
+    public struct function coordinateAnalysis( required string filePath, string language = "BoxLang", struct context = {} ) {
+        var t0 = getTickCount();
+        var selectedTools = [];
+        var rawFindings = [];
+
+        // 1. Seleccionar herramientas deterministas prioritarias
+        var staticTool = variables.toolRegistry.selectTool( arguments.language, "static_analysis" );
+        if ( staticTool.selected ) {
+            arrayAppend( selectedTools, staticTool );
+        }
+
+        var linterTool = variables.toolRegistry.selectTool( arguments.language, "linter" );
+        if ( linterTool.selected ) {
+            arrayAppend( selectedTools, linterTool );
+        }
+
+        // Si existen hallazgos de contexto previo (ej. de escaneo estatico o caos)
+        if ( structKeyExists( arguments.context, "staticFindings" ) && isArray( arguments.context.staticFindings ) ) {
+            for ( var sf in arguments.context.staticFindings ) {
+                arrayAppend( rawFindings, {
+                    "sourceEngine" : "StaticRulesEngine",
+                    "code"         : sf.code,
+                    "severity"     : structKeyExists( sf, "severity" ) ? sf.severity : "HIGH",
+                    "line"         : structKeyExists( sf, "line" ) ? sf.line : 1,
+                    "snippet"      : structKeyExists( sf, "snippet" ) ? sf.snippet : "",
+                    "description"  : structKeyExists( sf, "risk" ) ? sf.risk : ""
+                } );
+            }
+        }
+
+        if ( structKeyExists( arguments.context, "chaosFailures" ) && isArray( arguments.context.chaosFailures ) ) {
+            for ( var cf in arguments.context.chaosFailures ) {
+                arrayAppend( rawFindings, {
+                    "sourceEngine" : "ChaosEngine",
+                    "code"         : structKeyExists( cf, "code" ) ? cf.code : "CHAOS_FAILURE",
+                    "severity"     : "CRITICAL",
+                    "line"         : structKeyExists( cf, "errorLine" ) ? val( cf.errorLine ) : 1,
+                    "snippet"      : structKeyExists( cf, "errorMessage" ) ? cf.errorMessage : "",
+                    "description"  : "Fallo confirmado bajo perturbacion inducida"
+                } );
+            }
+        }
+
+        // 2. Consolidar, contrastar y deduplicar
+        var consolidation = consolidateFindings( rawFindings );
+
+        return {
+            "ok"              : true,
+            "filePath"        : arguments.filePath,
+            "language"        : arguments.language,
+            "durationMs"      : getTickCount() - t0,
+            "selectedTools"   : selectedTools,
+            "consolidated"    : consolidation.findings,
+            "agreements"      : consolidation.agreements,
+            "contradictions"  : consolidation.contradictions,
+            "totalRaw"        : arrayLen( rawFindings ),
+            "totalUnique"     : arrayLen( consolidation.findings )
+        };
+    }
+
+    /**
+     * Consolida hallazgos heterogeneos, detecta concordancias/contradicciones y deduplica.
+     */
+    public struct function consolidateFindings( required array rawFindings ) {
+        var buckets = {};
+        var agreements = [];
+        var contradictions = [];
+
+        for ( var item in arguments.rawFindings ) {
+            var key = item.code & "@" & item.line;
+            if ( !structKeyExists( buckets, key ) ) {
+                buckets[ key ] = {
+                    "code"           : item.code,
+                    "line"           : item.line,
+                    "snippet"        : item.snippet,
+                    "description"    : item.description,
+                    "severity"       : item.severity,
+                    "engines"        : [ item.sourceEngine ],
+                    "concordanceCount": 1,
+                    "confidenceScore": 0.80
+                };
+            } else {
+                var b = buckets[ key ];
+                if ( !arrayContains( b.engines, item.sourceEngine ) ) {
+                    arrayAppend( b.engines, item.sourceEngine );
+                    b.concordanceCount++;
+                    // La coincidencia entre motores aumenta la confianza hasta un maximo de 0.98
+                    b.confidenceScore = min( 0.98, b.confidenceScore + 0.10 );
+                }
+            }
+        }
+
+        var consolidatedList = [];
+        for ( var k in buckets ) {
+            var finding = buckets[ k ];
+            if ( finding.concordanceCount > 1 ) {
+                arrayAppend( agreements, {
+                    "key"      : k,
+                    "code"     : finding.code,
+                    "engines"  : finding.engines,
+                    "evidence" : "Coincidencia plena entre " & arrayToList( finding.engines, ", " )
+                } );
+            }
+            arrayAppend( consolidatedList, finding );
+        }
+
+        return {
+            "findings"       : consolidatedList,
+            "agreements"     : agreements,
+            "contradictions" : contradictions
+        };
+    }
+
+}

@@ -1,0 +1,178 @@
+/**
+ * JavaScriptTypeScriptEcosystem - Modulo de conocimiento especializado y analizador
+ * estatico determinista para el ecosistema JavaScript / TypeScript y Node.js.
+ *
+ * Fuente: ECMA-262 (ECMAScript), TypeScript Handbook, OWASP Node.js Top 10, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "JavaScript/TypeScript";
+        variables.version     = "ES2022+ / TypeScript 5.x / Node.js 18-22";
+        variables.provenance  = "ECMA International / Microsoft TypeScript / OWASP Node.js";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "Vite", "Webpack", "esbuild", "tsc", "Rollup" ],
+            "testFrameworks" : [ "Jest", "Vitest", "Mocha", "Playwright" ],
+            "packageManagers": [ "npm", "yarn", "pnpm", "bun" ],
+            "linters"        : [ "eslint", "tsc", "oxlint", "biome" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "JS_TYPE_ERROR_UNDEFINED_PROP",
+                "cwe"         : "CWE-476",
+                "severity"    : "HIGH",
+                "title"       : "TypeError: Cannot read properties of undefined/null",
+                "symptoms"    : "Crash en runtime al acceder a 'user.address.street' cuando address es undefined",
+                "rootCause"   : "Desreferencia anidada sin operador de encadenamiento opcional (?.) ni guardia condicional",
+                "remediation" : "Utilizar Optional Chaining (user?.address?.street) con fallback mediante Nullish Coalescing (?? 'N/A')",
+                "exampleVuln" : "const city = response.data.user.location.city;",
+                "exampleFixed": "const city = response?.data?.user?.location?.city ?? 'Desconocida';"
+            },
+            {
+                "code"        : "JS_UNHANDLED_PROMISE_REJECTION",
+                "cwe"         : "CWE-703",
+                "severity"    : "HIGH",
+                "title"       : "UnhandledPromiseRejection por ausencia de catch o await",
+                "symptoms"    : "El proceso Node.js finaliza abruptamente con UnhandledPromiseRejection en produccion",
+                "rootCause"   : "Invocacion de funcion async sin await ni .catch(), o falta de bloque try/catch envolvente",
+                "remediation" : "Asegurar 'await' en llamadas a Promesas dentro de bloques try/catch, o registrar un .catch(err => ...)",
+                "exampleVuln" : "async function handle() { saveToDatabase(); }",
+                "exampleFixed": "async function handle() {\n    try {\n        await saveToDatabase();\n    } catch (err) {\n        logger.error('Error guardando en BD', err);\n    }\n}"
+            },
+            {
+                "code"        : "JS_PROTOTYPE_POLLUTION",
+                "cwe"         : "CWE-1321",
+                "severity"    : "CRITICAL",
+                "title"       : "Prototype Pollution mediante merge recursivo inseguro (CWE-1321)",
+                "symptoms"    : "Modificacion de Object.prototype permitiendo bypass de autenticacion o RCE",
+                "rootCause"   : "Asignacion de claves no sanitizadas '__proto__', 'constructor' o 'prototype' desde JSON externo",
+                "remediation" : "Usar Object.create(null), congelar prototipos con Object.freeze() o filtrar claves peligrosas",
+                "exampleVuln" : "target[key] = source[key]; // donde key es '__proto__'",
+                "exampleFixed": "if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;"
+            },
+            {
+                "code"        : "JS_COMMAND_INJECTION_EXEC",
+                "cwe"         : "CWE-78",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion de comandos con child_process.exec (CWE-78)",
+                "symptoms"    : "Ejecucion de comandos del sistema con shell pasandole cadenas concatenadas",
+                "rootCause"   : "Uso de child_process.exec(`comando ${userInput}`) que invoca un shell /bin/sh o cmd.exe",
+                "remediation" : "Utilizar child_process.execFile() o child_process.spawn() pasando un array de argumentos",
+                "exampleVuln" : "exec('convert ' + req.query.file + ' out.png');",
+                "exampleFixed": "execFile('convert', [req.query.file, 'out.png']);"
+            },
+            {
+                "code"        : "JS_DOM_XSS_INNER_HTML",
+                "cwe"         : "CWE-79",
+                "severity"    : "HIGH",
+                "title"       : "Cross-Site Scripting (XSS) basado en DOM via innerHTML (CWE-79)",
+                "symptoms"    : "Ejecucion de JavaScript malicioso en el navegador del usuario al inyectar HTML dinamico",
+                "rootCause"   : "Asignacion de datos no escapados a element.innerHTML o dangerouslySetInnerHTML en React",
+                "remediation" : "Utilizar element.textContent, innerText o sanitizar previamente con DOMPurify.sanitize()",
+                "exampleVuln" : "document.getElementById('profile').innerHTML = user.bio;",
+                "exampleFixed": "document.getElementById('profile').textContent = user.bio;"
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( left( trimmed, 2 ) == "//" || left( trimmed, 1 ) == "*" || len( trimmed ) == 0 ) {
+                continue;
+            }
+
+            // 1. Inyeccion de comandos con child_process.exec
+            if ( reFindNoCase( "(child_process\.exec\s*\(|\bexec\s*\(`[^`]*\$\{)", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JS_COMMAND_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "JavaScript/TypeScript",
+                    "description": "Invocacion de shell con child_process.exec() vulnerable a command injection (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar execFile() o spawn() con array estricto de argumentos."
+                } );
+            }
+
+            // 2. Evaluacion dinamica de codigo con eval() o new Function()
+            if ( reFindNoCase( "(\beval\s*\([^)]+|new\s+Function\s*\([^)]+)", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JS_EVAL_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-95",
+                    "language"   : "JavaScript/TypeScript",
+                    "description": "Uso de eval() o new Function() que permite ejecucion de codigo arbitrario (CWE-95).",
+                    "evidence"   : trimmed,
+                    "remediation": "Evitar ejecucion dinamica de strings o usar JSON.parse() para datos estructurados."
+                } );
+            }
+
+            // 3. XSS basado en innerHTML
+            if ( reFindNoCase( "(\.innerHTML\s*=\s*[^;]+|dangerouslySetInnerHTML)", line ) && !find( "DOMPurify", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JS_DOM_XSS_INNER_HTML",
+                    "severity"   : "HIGH",
+                    "cwe"        : "CWE-79",
+                    "language"   : "JavaScript/TypeScript",
+                    "description": "Asignacion a innerHTML sin sanitizar vulnerable a Cross-Site Scripting (CWE-79).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar textContent o sanitizar el HTML con DOMPurify antes de renderizar."
+                } );
+            }
+
+            // 4. Secretos hardcodeados
+            if ( reFindNoCase( "(apiKey|api_key|jwtSecret|auth_token|client_secret)\s*[:=]\s*['""][A-Za-z0-9_\-\.]{16,}['""]", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JS_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "JavaScript/TypeScript",
+                    "description": "Credencial confidencial o token API hardcodeado en codigo JavaScript (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Mover a variables de entorno accesibles mediante process.env."
+                } );
+            }
+
+            // 5. Prototype pollution susceptible
+            if ( find( "__proto__", line ) || find( "constructor.prototype", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "JS_PROTOTYPE_POLLUTION",
+                    "severity"   : "HIGH",
+                    "cwe"        : "CWE-1321",
+                    "language"   : "JavaScript/TypeScript",
+                    "description": "Manipulacion de __proto__ o prototype susceptible a Prototype Pollution (CWE-1321).",
+                    "evidence"   : trimmed,
+                    "remediation": "Bloquear claves reservadas (__proto__, constructor) o usar Map/Object.create(null)."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

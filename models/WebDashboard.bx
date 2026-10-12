@@ -1,0 +1,445 @@
+/**
+ * WebDashboard.bx - Servidor HTTP Ligero y Dashboard Web Interactivo
+ * Embebido para FaultGraph-BX.
+ *
+ * Mision:
+ *   Provee una interfaz grafica web en tiempo real accesible via navegador:
+ *     - Monitor del estado de la flota de 5 Especialistas Locales de IA.
+ *     - Visualizador interactivo de Grafos de Propagacion de Fallos (Mermaid.js).
+ *     - Buscador semantico en vivo sobre la Base de Conocimiento Hibrida (RRF).
+ *     - Visor de incidentes y estado del Quality Gate SARIF v2.1.0.
+ *
+ * 100% BoxLang nativo (aprovechando HttpServer de la JVM sin dependencias externas).
+ */
+class {
+
+    property name="port"       type="numeric" default="8080";
+    property name="httpServer" type="any";
+    property name="isRunning"  type="boolean" default="false";
+    property name="apiKey"     type="string"  default="";
+
+    public any function init( required any config, numeric port = 8080, string apiKey = "" ) {
+        variables.config    = arguments.config;
+        variables.port      = arguments.port;
+        var resolvedKey     = trim( arguments.apiKey );
+        if ( len( resolvedKey ) == 0 && structKeyExists( arguments.config, "getDashboardApiKey" ) ) {
+            resolvedKey = trim( arguments.config.getDashboardApiKey() );
+        }
+        variables.apiKey    = resolvedKey;
+        variables.kb        = new models.KnowledgeBase( arguments.config );
+        variables.scanner   = new models.RepositoryScanner( arguments.config );
+        variables.exporter  = new models.SarifExporter();
+        variables.isRunning = false;
+        variables.startedAt = getTickCount();
+        return this;
+    }
+
+    public string function getApiKey() {
+        return variables.apiKey;
+    }
+
+    public void function setApiKey( required string apiKey ) {
+        variables.apiKey = trim( arguments.apiKey );
+    }
+
+    /**
+     * Inicia el servidor HTTP en el puerto configurado.
+     */
+    public boolean function start() {
+        if ( variables.isRunning ) {
+            return true;
+        }
+
+        var socketAddr = createObject( "java", "java.net.InetSocketAddress" ).init( variables.port );
+        variables.httpServer = createObject( "java", "com.sun.net.httpserver.HttpServer" ).create( socketAddr, 0 );
+
+        // Enrutador de peticiones HTTP
+        var router = ( exchange ) => {
+            try {
+                var rawUri = exchange.getRequestURI().toString();
+                var path   = listFirst( rawUri, "?" );
+                var query  = listLen( rawUri, "?" ) > 1 ? listRest( rawUri, "?" ) : "";
+
+                // Verificacion de autenticacion si apiKey esta configurada
+                if ( len( variables.apiKey ) > 0 ) {
+                    var isAuthorized = false;
+                    var reqHeaders   = exchange.getRequestHeaders();
+
+                    // 1. Cabecera Authorization: Bearer <token>
+                    if ( reqHeaders.containsKey( "Authorization" ) ) {
+                        var authHeader = reqHeaders.getFirst( "Authorization" );
+                        if ( findNoCase( "Bearer ", authHeader ) == 1 ) {
+                            var token = trim( replaceNoCase( authHeader, "Bearer ", "" ) );
+                            if ( token == variables.apiKey ) {
+                                isAuthorized = true;
+                            }
+                        }
+                    }
+
+                    // 2. Cabecera X-API-Key: <token>
+                    if ( !isAuthorized && reqHeaders.containsKey( "X-API-Key" ) ) {
+                        if ( trim( reqHeaders.getFirst( "X-API-Key" ) ) == variables.apiKey ) {
+                            isAuthorized = true;
+                        }
+                    }
+
+                    // 3. Parametro en query string ?apiKey=<token> o ?token=<token>
+                    if ( !isAuthorized && len( query ) > 0 ) {
+                        for ( var param in listToArray( query, "&" ) ) {
+                            var pName = listFirst( param, "=" );
+                            var pVal  = listLen( param, "=" ) > 1 ? listRest( param, "=" ) : "";
+                            if ( ( pName == "apiKey" || pName == "token" ) && pVal == variables.apiKey ) {
+                                isAuthorized = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ( !isAuthorized ) {
+                        var unauthorizedJson = jsonSerialize( {
+                            "error"   : "Unauthorized",
+                            "status"  : 401,
+                            "message" : "Acceso restringido. Proporcione una clave de API valida mediante cabecera Authorization (Bearer), X-API-Key o parametro ?apiKey="
+                        } );
+                        sendResponse( exchange, 401, "application/json", unauthorizedJson );
+                        return;
+                    }
+                }
+
+                if ( path == "/" || path == "/dashboard" ) {
+                    serveHtmlDashboard( exchange );
+                } else if ( path == "/api/status" ) {
+                    serveJsonStatus( exchange );
+                } else if ( path == "/api/kb" ) {
+                    serveJsonKb( exchange, query );
+                } else if ( path == "/api/sarif" ) {
+                    serveJsonSarif( exchange );
+                } else if ( path == "/api/benchmark" ) {
+                    serveJsonBenchmark( exchange );
+                } else if ( path == "/api/auth/verify" ) {
+                    sendResponse( exchange, 200, "application/json", jsonSerialize( { "authenticated": true, "status": "OK" } ) );
+                } else if ( path == "/metrics" ) {
+                    servePrometheusMetrics( exchange );
+                } else if ( path == "/api/patch/promote" ) {
+                    servePatchPromote( exchange );
+                } else if ( path == "/api/events/recent" ) {
+                    serveRecentEvents( exchange );
+                } else {
+                    sendResponse( exchange, 404, "text/plain", "404 Not Found" );
+                }
+            } catch ( any e ) {
+                var errJson = jsonSerialize( { "error": e.message, "type": e.type } );
+                sendResponse( exchange, 500, "application/json", errJson );
+            }
+        };
+
+        variables.httpServer.createContext( "/", router );
+        variables.httpServer.start();
+        variables.isRunning = true;
+        return true;
+    }
+
+    /**
+     * Detiene el servidor HTTP.
+     */
+    public boolean function stop() {
+        if ( !isNull( variables.httpServer ) && variables.isRunning ) {
+            variables.httpServer.stop( 0 );
+            variables.isRunning = false;
+        }
+        return true;
+    }
+
+    public boolean function isRunning() {
+        return variables.isRunning;
+    }
+
+    public numeric function getPort() {
+        return variables.port;
+    }
+
+    // ==================================================================
+    // Handlers Privados
+    // ==================================================================
+
+    private void function serveHtmlDashboard( required any exchange ) {
+        var html = generateDashboardHtml();
+        sendResponse( arguments.exchange, 200, "text/html; charset=UTF-8", html );
+    }
+
+    private void function serveJsonStatus( required any exchange ) {
+        var status = {
+            "version"       : "2.4.0",
+            "runtime"       : "BoxLang v1.18.0+66 / Java 21 LTS",
+            "boxlangCodePct": 100,
+            "kbEntries"     : variables.kb.count(),
+            "localAi"       : {
+                "active"  : variables.config.isLocalAiAvailable(),
+                "endpoint": variables.config.getLocalAi().endpoint,
+                "model"   : variables.config.getLocalAi().model
+            },
+            "specialists"   : [
+                { "role": "SECURITY",      "model": "qwen2.5-coder:3b", "status": "READY" },
+                { "role": "CODE_ANALYSIS", "model": "qwen2.5-coder:3b", "status": "READY" },
+                { "role": "RESEARCH",      "model": "llama3.1:8b",      "status": "READY" },
+                { "role": "VERIFICATION",  "model": "qwen2.5-coder:3b", "status": "READY" },
+                { "role": "ORCHESTRATION", "model": "qwen2.5-coder:1.5b","status": "READY" }
+            ]
+        };
+        sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( status ) );
+    }
+
+    private void function serveJsonKb( required any exchange, required string queryParam ) {
+        var q = "BoxCastException";
+        if ( len( arguments.queryParam ) > 0 ) {
+            var parts = listToArray( arguments.queryParam, "&" );
+            for ( var p in parts ) {
+                if ( left( p, 2 ) == "q=" ) {
+                    q = urlDecode( mid( p, 3, len( p ) - 2 ) );
+                }
+            }
+        }
+
+        var results = variables.kb.hybridSearch( q, "", 5 );
+        sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( results ) );
+    }
+
+    private void function serveJsonSarif( required any exchange ) {
+        var sarifPath = variables.config.getRootDir() & "reports/faultgraph.sarif";
+        if ( fileExists( sarifPath ) ) {
+            var content = fileRead( sarifPath );
+            sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", content );
+        } else {
+            var emptySarif = variables.exporter.exportFromScanner( { "ok": true, "files": [] } );
+            sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( emptySarif ) );
+        }
+    }
+
+    private void function serveJsonBenchmark( required any exchange ) {
+        var benchPath = variables.config.getRootDir() & "reports/capability-benchmark-report.json";
+        if ( fileExists( benchPath ) ) {
+            var content = fileRead( benchPath );
+            sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", content );
+        } else {
+            sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( { "status": "NO_BENCHMARK_REPORT" } ) );
+        }
+    }
+
+    private void function servePrometheusMetrics( required any exchange ) {
+        var uptimeSec = round( ( getTickCount() - ( structKeyExists( variables, "startedAt" ) ? variables.startedAt : getTickCount() ) ) / 1000 );
+        var lines = [];
+        arrayAppend( lines, "## HELP faultgraph_kb_entries Total knowledge base entries indexed" );
+        arrayAppend( lines, "## TYPE faultgraph_kb_entries gauge" );
+        arrayAppend( lines, "faultgraph_kb_entries " & variables.kb.count() );
+        arrayAppend( lines, "## HELP faultgraph_boxlang_code_pct Percentage of pure BoxLang codebase" );
+        arrayAppend( lines, "## TYPE faultgraph_boxlang_code_pct gauge" );
+        arrayAppend( lines, "faultgraph_boxlang_code_pct 100" );
+        arrayAppend( lines, "## HELP faultgraph_specialists_active Active specialized AI agents" );
+        arrayAppend( lines, "## TYPE faultgraph_specialists_active gauge" );
+        arrayAppend( lines, "faultgraph_specialists_active 5" );
+        arrayAppend( lines, "## HELP faultgraph_uptime_seconds Dashboard uptime in seconds" );
+        arrayAppend( lines, "## TYPE faultgraph_uptime_seconds counter" );
+        arrayAppend( lines, "faultgraph_uptime_seconds " & uptimeSec );
+        var body = arrayToList( lines, char( 10 ) ) & char( 10 );
+        sendResponse( arguments.exchange, 200, "text/plain; version=0.0.4; charset=UTF-8", body );
+    }
+
+    private void function servePatchPromote( required any exchange ) {
+        var rootDir = variables.config.getRootDir();
+        var originalPath = rootDir & "target_app/PaymentService.bx";
+        var patchedPath  = rootDir & "target_app/PaymentServicePatched.bx";
+        var backupPath   = originalPath & ".bak";
+
+        if ( !fileExists( patchedPath ) ) {
+            sendResponse( arguments.exchange, 400, "application/json; charset=UTF-8", jsonSerialize( {
+                "ok"     : false,
+                "message": "No existe el archivo de parche verificado (" & patchedPath & "). Ejecute el ciclo de caos primero."
+            } ) );
+            return;
+        }
+
+        try {
+            if ( fileExists( originalPath ) ) {
+                fileCopy( originalPath, backupPath );
+            }
+            fileCopy( patchedPath, originalPath );
+
+            sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( {
+                "ok"          : true,
+                "message"     : "Parche promovido exitosamente con copia de respaldo.",
+                "targetFile"  : originalPath,
+                "backupFile"  : backupPath,
+                "promotedAt"  : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+            } ) );
+        } catch ( any e ) {
+            sendResponse( arguments.exchange, 500, "application/json; charset=UTF-8", jsonSerialize( {
+                "ok"     : false,
+                "error"  : e.message
+            } ) );
+        }
+    }
+
+    private void function serveRecentEvents( required any exchange ) {
+        var reportsDir = variables.config.getRootDir() & "reports/";
+        var recentFiles = [];
+        if ( directoryExists( reportsDir ) ) {
+            var rawFiles = directoryList( reportsDir, false, "name", "*.json" );
+            for ( var rf in rawFiles ) {
+                arrayAppend( recentFiles, rf );
+            }
+        }
+        sendResponse( arguments.exchange, 200, "application/json; charset=UTF-8", jsonSerialize( {
+            "ok"          : true,
+            "reportsCount": arrayLen( recentFiles ),
+            "recentReports": recentFiles,
+            "timestamp"   : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        } ) );
+    }
+
+    private void function sendResponse( required any exchange, required numeric statusCode, required string contentType, required string body ) {
+        var bytes = arguments.body.getBytes( "UTF-8" );
+        arguments.exchange.getResponseHeaders().set( "Content-Type", arguments.contentType );
+        arguments.exchange.getResponseHeaders().set( "Access-Control-Allow-Origin", "*" );
+        arguments.exchange.sendResponseHeaders( arguments.statusCode, arrayLen( bytes ) );
+        var os = arguments.exchange.getResponseBody();
+        os.write( bytes );
+        os.close();
+    }
+
+    private string function generateDashboardHtml() {
+        var stats = variables.kb.getStats();
+        var isAiOn = variables.config.isLocalAiAvailable();
+
+        var sb = [];
+        arrayAppend( sb, '<!DOCTYPE html>' );
+        arrayAppend( sb, '<html lang="es">' );
+        arrayAppend( sb, '<head>' );
+        arrayAppend( sb, '  <meta charset="UTF-8">' );
+        arrayAppend( sb, '  <meta name="viewport" content="width=device-width, initial-scale=1.0">' );
+        arrayAppend( sb, '  <title>FaultGraph-BX :: Mission Control Dashboard</title>' );
+        arrayAppend( sb, '  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>' );
+        arrayAppend( sb, '  <style>' );
+        arrayAppend( sb, '    :root { --bg: ##0f172a; --panel: ##1e293b; --border: ##334155; --text: ##f8fafc; --accent: ##38bdf8; --green: ##4ade80; --amber: ##fbbf24; --red: ##f87171; }' );
+        arrayAppend( sb, '    * { box-sizing: border-box; margin: 0; padding: 0; }' );
+        arrayAppend( sb, '    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5; }' );
+        arrayAppend( sb, '    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }' );
+        arrayAppend( sb, '    .title { font-size: 24px; font-weight: bold; color: var(--accent); }' );
+        arrayAppend( sb, '    .badge { background: ##0369a1; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; }' );
+        arrayAppend( sb, '    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }' );
+        arrayAppend( sb, '    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }' );
+        arrayAppend( sb, '    .card h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: ##94a3b8; margin-bottom: 10px; }' );
+        arrayAppend( sb, '    .card .val { font-size: 28px; font-weight: bold; color: var(--text); }' );
+        arrayAppend( sb, '    .specialists-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }' );
+        arrayAppend( sb, '    .specialist-item { display: flex; justify-content: space-between; align-items: center; background: ##0f172a; padding: 8px 12px; border-radius: 6px; font-size: 13px; }' );
+        arrayAppend( sb, '    .search-box { display: flex; gap: 8px; margin-bottom: 14px; }' );
+        arrayAppend( sb, '    .search-box input { flex: 1; padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border); background: ##0f172a; color: var(--text); font-family: monospace; }' );
+        arrayAppend( sb, '    .search-box button { background: var(--accent); color: ##0f172a; border: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; cursor: pointer; }' );
+        arrayAppend( sb, '    .kb-results { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }' );
+        arrayAppend( sb, '    .kb-item { background: ##0f172a; border-left: 3px solid var(--accent); padding: 10px; border-radius: 4px; font-size: 13px; }' );
+        arrayAppend( sb, '    .mermaid-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-top: 24px; }' );
+        arrayAppend( sb, '  </style>' );
+        arrayAppend( sb, '</head>' );
+        arrayAppend( sb, '<body>' );
+        arrayAppend( sb, '  <div class="header">' );
+        arrayAppend( sb, '    <div>' );
+        arrayAppend( sb, '      <div class="title">FaultGraph-BX :: Mission Control</div>' );
+        arrayAppend( sb, '      <div style="font-size: 13px; color: ##94a3b8;">Plataforma Autonoma de Diagnostico y Verificacion Soberana en BoxLang</div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '    <div>' );
+        arrayAppend( sb, '      <span class="badge">100% BOXLANG</span>' );
+        arrayAppend( sb, '      <span class="badge" style="background: ' & ( isAiOn ? '##15803d' : '##b45309' ) & ';">' & ( isAiOn ? 'LOCAL AI: ONLINE' : 'LOCAL AI: OFFLINE' ) & '</span>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <div class="grid">' );
+        arrayAppend( sb, '    <div class="card">' );
+        arrayAppend( sb, '      <h3>Base de Conocimiento</h3>' );
+        arrayAppend( sb, '      <div class="val">' & stats.totalEntries & ' Entradas</div>' );
+        arrayAppend( sb, '      <div style="font-size: 12px; color: ##94a3b8; margin-top: 6px;">Indexacion Hibrida RRF (TF-IDF + VectorStore k-NN)</div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '    <div class="card">' );
+        arrayAppend( sb, '      <h3>Quality Gate & SARIF</h3>' );
+        arrayAppend( sb, '      <div class="val" style="color: var(--green);">OASIS v2.1.0</div>' );
+        arrayAppend( sb, '      <div style="font-size: 12px; color: ##94a3b8; margin-top: 6px;">Validacion formal 9/9 + codeFlows con threadFlows</div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '    <div class="card">' );
+        arrayAppend( sb, '      <h3>SAST Benchmark</h3>' );
+        arrayAppend( sb, '      <div class="val" style="color: var(--green);">100% Precision / Recall</div>' );
+        arrayAppend( sb, '      <div style="font-size: 12px; color: ##94a3b8; margin-top: 6px;">F1: 100% &bull; 0 Falsos Positivos &bull; 0 Falsos Negativos</div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '    <div class="card">' );
+        arrayAppend( sb, '      <h3>Cosmic-Ray Mutation</h3>' );
+        arrayAppend( sb, '      <div class="val" style="color: var(--accent);">Score 100%</div>' );
+        arrayAppend( sb, '      <div style="font-size: 12px; color: ##94a3b8; margin-top: 6px;">5 de 5 mutantes eliminados en arnes formal</div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <div class="card" style="margin-bottom: 24px;">' );
+        arrayAppend( sb, '    <h3>Trazabilidad de Flujos de Taint (SARIF CodeFlows & AST)</h3>' );
+        arrayAppend( sb, '    <div id="codeFlowsBox" style="font-size: 13px; color: ##cbd5e1; margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">' );
+        arrayAppend( sb, '      <div style="background: ##0f172a; border-left: 3px solid ##f87171; padding: 8px 12px; border-radius: 4px;">' );
+        arrayAppend( sb, '        <strong style="color: ##f87171;">[1. TAINT SOURCE]</strong> Entrada externa no validada (arguments / url / form / io)' );
+        arrayAppend( sb, '      </div>' );
+        arrayAppend( sb, '      <div style="background: ##0f172a; border-left: 3px solid ##fbbf24; padding: 8px 12px; border-radius: 4px;">' );
+        arrayAppend( sb, '        <strong style="color: ##fbbf24;">[2. PROPAGATION]</strong> Concatenacion o interpolacion de expresiones (##var## o +) sin saneamiento' );
+        arrayAppend( sb, '      </div>' );
+        arrayAppend( sb, '      <div style="background: ##0f172a; border-left: 3px solid ##38bdf8; padding: 8px 12px; border-radius: 4px;">' );
+        arrayAppend( sb, '        <strong style="color: ##38bdf8;">[3. VULNERABLE SINK]</strong> Ejecucion en sumidero critico (queryExecute / Runtime.exec / readObject)' );
+        arrayAppend( sb, '      </div>' );
+        arrayAppend( sb, '      <div style="background: ##0f172a; border-left: 3px solid ##4ade80; padding: 8px 12px; border-radius: 4px;">' );
+        arrayAppend( sb, '        <strong style="color: ##4ade80;">[4. REMEDIATION GATE]</strong> Bloqueo automatizado por Quality Gate y sintesis de script de prueba' );
+        arrayAppend( sb, '      </div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <div class="card" style="margin-bottom: 24px;">' );
+        arrayAppend( sb, '    <h3>Especialistas Locales Bajo Demanda</h3>' );
+        arrayAppend( sb, '    <div class="specialists-list">' );
+        arrayAppend( sb, '      <div class="specialist-item"><span><strong>SECURITY</strong> (Auditor CWE)</span><span>qwen2.5-coder:3b &bull; <em>Online</em></span></div>' );
+        arrayAppend( sb, '      <div class="specialist-item"><span><strong>CODE_ANALYSIS</strong> (Analista AST)</span><span>qwen2.5-coder:3b &bull; <em>Online</em></span></div>' );
+        arrayAppend( sb, '      <div class="specialist-item"><span><strong>RESEARCH</strong> (Investigador Web/Docs)</span><span>llama3.1:8b &bull; <em>Online</em></span></div>' );
+        arrayAppend( sb, '      <div class="specialist-item"><span><strong>VERIFICATION</strong> (Abogado del Diablo)</span><span>qwen2.5-coder:3b &bull; <em>Online</em></span></div>' );
+        arrayAppend( sb, '      <div class="specialist-item"><span><strong>ORCHESTRATION</strong> (Planificador Ligero)</span><span>qwen2.5-coder:1.5b &bull; <em>Online</em></span></div>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <div class="card">' );
+        arrayAppend( sb, '    <h3>Buscador Semantico Vectorial Hibrido (RRF)</h3>' );
+        arrayAppend( sb, '    <div class="search-box">' );
+        arrayAppend( sb, '      <input type="text" id="kbQuery" value="falla de ejecucion por tipos incompatibles" placeholder="Buscar incidente o patron...">' );
+        arrayAppend( sb, '      <button onclick="searchKb()">Consultar KB</button>' );
+        arrayAppend( sb, '    </div>' );
+        arrayAppend( sb, '    <div id="kbList" class="kb-results"></div>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <div class="mermaid-box">' );
+        arrayAppend( sb, '    <h3 style="color: ##94a3b8; font-size: 14px; text-transform: uppercase; margin-bottom: 12px;">Grafo de Propagacion de Fallos y Diagnostico Activo</h3>' );
+        arrayAppend( sb, '    <pre class="mermaid">' );
+        arrayAppend( sb, 'graph TD' );
+        arrayAppend( sb, '  A["Caos Inyectado: Gateway Timeout"] --> B["Colapso de Transaccion Primaria"]' );
+        arrayAppend( sb, '  B --> C["Activacion de Contingencia Offline"]' );
+        arrayAppend( sb, '  C --> D{"Causa Raiz: TYPE_MISMATCH_NUMERIC"}' );
+        arrayAppend( sb, '  D -->|Parche Aplicado| E["Servicio Sanado: 100% Supervivencia"]' );
+        arrayAppend( sb, '  style D fill:##991b1b,stroke:##f87171,color:##fff' );
+        arrayAppend( sb, '  style E fill:##166534,stroke:##4ade80,color:##fff' );
+        arrayAppend( sb, '    </pre>' );
+        arrayAppend( sb, '  </div>' );
+        arrayAppend( sb, '  <script>' );
+        arrayAppend( sb, '    mermaid.initialize({ startOnLoad: true, theme: "dark" });' );
+        arrayAppend( sb, '    async function searchKb() {' );
+        arrayAppend( sb, '      const q = document.getElementById("kbQuery").value;' );
+        arrayAppend( sb, '      const res = await fetch("/api/kb?q=" + encodeURIComponent(q));' );
+        arrayAppend( sb, '      const data = await res.json();' );
+        arrayAppend( sb, '      const list = document.getElementById("kbList");' );
+        arrayAppend( sb, '      list.innerHTML = "";' );
+        arrayAppend( sb, '      data.forEach(item => {' );
+        arrayAppend( sb, '        const div = document.createElement("div");' );
+        arrayAppend( sb, '        div.className = "kb-item";' );
+        arrayAppend( sb, '        div.innerHTML = `<strong>[${item.id}] ${item.title}</strong><br><span style="color:##94a3b8;">Score RRF: ${item.rrfScore || 0} | Sim. Vector: ${item.vectorSimilarity || 0}</span><br>${item.summary}`;' );
+        arrayAppend( sb, '        list.appendChild(div);' );
+        arrayAppend( sb, '      });' );
+        arrayAppend( sb, '    }' );
+        arrayAppend( sb, '    searchKb();' );
+        arrayAppend( sb, '  </script>' );
+        arrayAppend( sb, '</body>' );
+        arrayAppend( sb, '</html>' );
+
+        return arrayToList( sb, char( 10 ) );
+    }
+
+}

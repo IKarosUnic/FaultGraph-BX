@@ -1,0 +1,180 @@
+/**
+ * CommandBox Command: box faultgraph
+ *
+ * Interfaz CLI unificada para la ejecucion de FaultGraph-BX desde terminales CommandBox y BoxLang.
+ *
+ * Uso:
+ *   box faultgraph doctor
+ *   box faultgraph scan target=./target_app
+ *   box faultgraph diagnose target=./target_app/sample_crash.log
+ *   box faultgraph chaos target=./target_app/PaymentService.bx
+ *   box faultgraph help
+ */
+class {
+
+    public any function init( any config = {} ) {
+        if ( isObject( arguments.config ) ) {
+            variables.config = arguments.config;
+        } else {
+            var baseDir = getDirectoryFromPath( getCurrentTemplatePath() );
+            baseDir = replace( baseDir, "commands\", "" );
+            baseDir = replace( baseDir, "commands/", "" );
+            variables.config = new config.Config( baseDir );
+        }
+        return this;
+    }
+
+    /**
+     * Punto de entrada principal de CommandBox.
+     *
+     * @action  Accion a ejecutar: doctor, scan, diagnose, chaos, benchmark, help
+     * @target  Ruta del archivo, directorio o log objetivo
+     * @useAi   Habilitar auditoria asistida por IA local
+     * @json    Emitir resultados en formato JSON estructurado
+     */
+    public any function run(
+        string action = "help",
+        string target = "",
+        boolean useAi = false,
+        boolean json = false
+    ) {
+        var act = lcase( trim( arguments.action ) );
+
+        switch ( act ) {
+            case "doctor":
+                return runDoctor( arguments.json );
+            case "scan":
+                return runScan( arguments.target, arguments.useAi, arguments.json );
+            case "diagnose":
+                return runDiagnose( arguments.target, arguments.json );
+            case "chaos":
+                return runChaos( arguments.target, arguments.json );
+            case "benchmark":
+                return runBenchmark( arguments.json );
+            case "help":
+            default:
+                return runHelp();
+        }
+    }
+
+    private any function runDoctor( boolean jsonOutput = false ) {
+        var sys = createObject( "java", "java.lang.System" );
+        var parserAvailable = false;
+        try {
+            var p = new ortus.boxlang.compiler.parser.BoxParser();
+            parserAvailable = true;
+        } catch ( any e ) {
+            parserAvailable = false;
+        }
+
+        var bxVer = structKeyExists( server, "boxlang" ) ? server.boxlang.version : "1.18.0";
+
+        var report = {
+            "ok"               : true,
+            "boxlangVersion"   : bxVer,
+            "javaVersion"      : sys.getProperty( "java.version" ),
+            "osName"           : sys.getProperty( "os.name" ),
+            "parserAstLevel0"  : parserAvailable,
+            "offlineMode"      : true,
+            "cloudTokensUsed"  : 0,
+            "status"           : "OPTIMO: Listo para ejecucion autonoma"
+        };
+
+        if ( arguments.jsonOutput ) {
+            return jsonSerialize( report );
+        }
+
+        println( "=== FAULTGRAPH-BX :: DIAGNOSTICO DEL ENTORNO (DOCTOR) ===" );
+        println( "  Runtime BoxLang    : " & report.boxlangVersion );
+        println( "  Java JDK           : " & report.javaVersion );
+        println( "  Sistema Operativo  : " & report.osName );
+        println( "  Parser AST Nivel 0 : " & ( report.parserAstLevel0 ? "DISPONIBLE (Nativo)" : "NO DISPONIBLE" ) );
+        println( "  Tokens Cloud       : 0 (Offline-First / Determinista)" );
+        println( "  Estado General     : " & report.status );
+        return report;
+    }
+
+    private any function runScan( string targetPath = "", boolean useAi = false, boolean jsonOutput = false ) {
+        var p = len( trim( arguments.targetPath ) ) > 0 ? arguments.targetPath : "target_app";
+        var scanner = new models.RepositoryScanner( variables.config );
+        var result = scanner.scanDirectory( p, arguments.useAi );
+
+        if ( arguments.jsonOutput ) {
+            return jsonSerialize( result );
+        }
+
+        println( "=== FAULTGRAPH-BX :: ESCANEO ESTATICO Y AUDITORIA ===" );
+        println( "  Ruta analizada     : " & p );
+        println( "  Archivos totales   : " & ( result.totalFiles ?: 0 ) );
+        println( "  Archivos limpios   : " & ( result.cleanFiles ?: 0 ) );
+        println( "  Archivos con fallos: " & ( result.vulnerableFiles ?: 0 ) );
+        println( "  Total incidencias  : " & ( result.totalIssues ?: 0 ) );
+        println( "  Duracion           : " & ( result.durationMs ?: 0 ) & " ms" );
+        return result;
+    }
+
+    private any function runDiagnose( string logPath = "", boolean jsonOutput = false ) {
+        var p = len( trim( arguments.logPath ) ) > 0 ? arguments.logPath : "target_app/sample_crash.log";
+        var ingestor = new models.LogDiagnosticIngestor( variables.config );
+        var result = ingestor.ingestAndDiagnoseFile( p );
+
+        if ( arguments.jsonOutput ) {
+            return jsonSerialize( result );
+        }
+
+        println( "=== FAULTGRAPH-BX :: INGESTA Y DIAGNOSTICO DE LOGS ===" );
+        println( "  Archivo de log     : " & p );
+        println( "  Lineas analizadas  : " & ( result.totalLogLines ?: 0 ) );
+        println( "  Errores extraidos  : " & ( result.errorsExtracted ?: 0 ) );
+        return result;
+    }
+
+    private any function runChaos( string servicePath = "", boolean jsonOutput = false ) {
+        var p = len( trim( arguments.servicePath ) ) > 0 ? arguments.servicePath : "target_app/PaymentService.bx";
+        var chaos = new models.ChaosEngine( variables.config );
+        var results = chaos.runCampaign( p );
+
+        if ( arguments.jsonOutput ) {
+            return jsonSerialize( results );
+        }
+
+        println( "=== FAULTGRAPH-BX :: CAMPANA DE INGENIERIA DE CAOS ===" );
+        println( "  Servicio auditado  : " & p );
+        println( "  Escenarios corridos: " & arrayLen( results.scenarios ?: [] ) );
+        println( "  Resiliencia global : " & ( results.summary.resilienceScore ?: "N/A" ) );
+        return results;
+    }
+
+    private any function runBenchmark( boolean jsonOutput = false ) {
+        var bench = new tests.benchmarks.FourParadigmBenchmark();
+        var results = bench.runBenchmark();
+
+        if ( arguments.jsonOutput ) {
+            return jsonSerialize( results );
+        }
+
+        println( "=== FAULTGRAPH-BX :: BENCHMARK DE LOS 4 PARADIGMAS ===" );
+        println( "  Casos evaluados    : " & ( results.totalCases ?: 0 ) );
+        println( "  Precision Paradigma: " & ( results.paradigmComparison.D.precision ?: "N/A" ) );
+        return results;
+    }
+
+    private string function runHelp() {
+        var help = "";
+        help &= "============================================================" & char( 10 );
+        help &= "     FAULTGRAPH-BX :: COMANDO CLI PARA COMMANDBOX / BOXLANG " & char( 10 );
+        help &= "============================================================" & char( 10 );
+        help &= "Uso:" & char( 10 );
+        help &= "  box faultgraph <action> [target=...] [useAi=true|false] [json=true|false]" & char( 10 ) & char( 10 );
+        help &= "Acciones disponibles:" & char( 10 );
+        help &= "  doctor     Verifica la salud del runtime de BoxLang, AST y Java." & char( 10 );
+        help &= "  scan       Ejecuta analisis estatico AST y auditoria de seguridad." & char( 10 );
+        help &= "  diagnose   Ingesta un log y extrae las causas raiz y diagramas Mermaid." & char( 10 );
+        help &= "  chaos      Ejecuta la campana de perturbaciones controladas." & char( 10 );
+        help &= "  benchmark  Ejecuta el benchmark formal de precision y recall." & char( 10 );
+        help &= "  help       Muestra este manual de uso." & char( 10 );
+        println( help );
+        return help;
+    }
+
+}

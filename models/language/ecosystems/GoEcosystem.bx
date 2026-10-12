@@ -1,0 +1,127 @@
+/**
+ * GoEcosystem - Modulo de conocimiento especializado y analizador estatico para Go (Golang).
+ *
+ * Fuente: The Go Programming Language Specification, Effective Go, Go Security Guidelines, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "Go";
+        variables.version     = "Go 1.18+ / 1.21+";
+        variables.provenance  = "The Go Authors / Google / OWASP Go Security";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "go build", "go install" ],
+            "testFrameworks" : [ "go test", "testify" ],
+            "packageManagers": [ "Go Modules (go.mod)" ],
+            "linters"        : [ "go vet", "staticcheck", "golangci-lint", "gosec" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "GO_UNCHECKED_ERROR",
+                "cwe"         : "CWE-703",
+                "severity"    : "HIGH",
+                "title"       : "Error ignorado o descartado con guion bajo '_ = err'",
+                "symptoms"    : "Comportamiento inesperado o fallos silenciosos al fallar operaciones de red o E/S",
+                "rootCause"   : "Descarte explicito del valor error retornado por funciones idiomaticas de Go",
+                "remediation" : "Comprobar siempre 'if err != nil { return err }' o manejar el fallo adecuadamente",
+                "exampleVuln" : "_ = file.Close()",
+                "exampleFixed": 'if err := file.Close(); err != nil {' & char( 10 ) & '    log.Printf("error: %v", err)' & char( 10 ) & '}'
+            },
+            {
+                "code"        : "GO_COMMAND_INJECTION_EXEC",
+                "cwe"         : "CWE-78",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion de comandos con exec.Command y sh -c (CWE-78)",
+                "symptoms"    : "Ejecucion arbitraria de comandos del sistema operativo a traves de shell",
+                "rootCause"   : "Invocacion de exec.Command pasando un subshell y cadena concatenada",
+                "remediation" : "Invocar el binario directamente con exec.Command(bin, args...) sin pasar por shell",
+                "exampleVuln" : 'cmd := exec.Command("sh", "-c", fmt.Sprintf("ping %s", host))',
+                "exampleFixed": 'cmd := exec.Command("ping", "-c", "1", host)'
+            },
+            {
+                "code"        : "GO_SQL_INJECTION_QUERY",
+                "cwe"         : "CWE-89",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion SQL en database/sql mediante fmt.Sprintf",
+                "symptoms"    : "Manipulacion de consultas SQL por concatenacion de entradas externas",
+                "rootCause"   : "db.Query con formateo dinamico de strings",
+                "remediation" : "Utilizar marcadores de posicion con db.Query y argumentos",
+                "exampleVuln" : 'db.Query(fmt.Sprintf("SELECT * FROM users WHERE name = %s", name))',
+                "exampleFixed": 'db.Query("SELECT * FROM users WHERE name = ?", name)'
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( left( trimmed, 2 ) == "//" || len( trimmed ) == 0 ) {
+                continue;
+            }
+
+            // 1. Inyeccion SQL en database/sql
+            if ( reFindNoCase( "(db\.Query|db\.Exec|db\.QueryRow)\s*\(\s*fmt\.Sprintf", line ) || ( find( "db.Query", line ) && find( " + ", line ) ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "GO_SQL_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-89",
+                    "language"   : "Go",
+                    "description": "Concatenacion o fmt.Sprintf en consulta database/sql (CWE-89).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar placeholders '?' o '$1' con parametros en db.Query()."
+                } );
+            }
+
+            // 2. Inyeccion de comandos con exec.Command
+            if ( reFindNoCase( "exec\.Command\s*\(\s*['""](sh|bash|cmd)['""]\s*,\s*['""]-(c|C)['""]\s*,", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "GO_COMMAND_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "Go",
+                    "description": "Invocacion de shell mediante exec.Command vulnerable a inyeccion (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Invocar directamente el ejecutable deseado sin subshell."
+                } );
+            }
+
+            // 3. Secretos hardcodeados
+            if ( reFindNoCase( "(apiKey|api_key|token|password)\s*:=\s*['""][A-Za-z0-9_\-\.]{16,}['""]", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "GO_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "Go",
+                    "description": "Credencial hardcodeada en codigo Go (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Cargar secreto desde variables de entorno con os.Getenv()."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

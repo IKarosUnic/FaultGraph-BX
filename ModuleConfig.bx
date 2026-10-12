@@ -1,0 +1,95 @@
+/**
+ * FaultGraph-BX ModuleConfig
+ *
+ * Declara las configuraciones, interceptores, dependencias y ciclo de vida del
+ * modulo nativo de BoxLang para ForgeBox.
+ */
+class {
+
+    // Metadatos formales del modulo
+    this.name           = "faultgraph-bx";
+    this.title          = "FaultGraph-BX Autonomous Self-Healing & Chaos Engine";
+    this.author         = "Hackathon Ortus Solutions x ANIA - Reto 01 INCIDENT ZERO";
+    this.version        = "1.0.0";
+    this.description    = "Sistema autonomo de analisis estatico AST, ingenieria de caos, inferencia de causa raiz y auto-reparacion para BoxLang.";
+    this.entryPoint     = "faultgraph";
+    this.modelNamespace = "faultgraph";
+    this.cfmapping      = "faultgraph";
+
+    /**
+     * Configuracion declarativa del modulo
+     */
+    public void function configure() {
+        // Configuraciones por defecto
+        settings = {
+            "offlineMode"        : true,
+            "targetSourcePath"   : "target_app/PaymentService.bx",
+            "virtualThreadPool"  : "chaos-pool",
+            "enableAstLevel0"    : true,
+            "enableInterceptors" : true,
+            "dashboardPort"      : 8095,
+            "dashboardAuthToken" : "",
+            "sarifOutputPath"    : "reports/sarif/"
+        };
+
+        // Puntos de intercepcion personalizados en el bus de eventos
+        interceptorSettings = {
+            customInterceptionPoints : [
+                "onIncidentStart",
+                "onStaticInspection",
+                "onChaosExecutionStart",
+                "onScenarioCompleted",
+                "onChaosExecutionEnd",
+                "onDiagnosisCompleted",
+                "onPatchSynthesized",
+                "onVerificationCompleted",
+                "onCanaryStarted",
+                "onCanaryRollback",
+                "onCanaryPromoted",
+                "onIncidentResolved"
+            ]
+        };
+
+        // Interceptores registrados en el modulo
+        interceptors = [
+            { class : "models.interceptors.FaultGraphInterceptor", name : "FaultGraphInterceptor" }
+        ];
+    }
+
+    /**
+     * Disparado cuando el modulo se carga en el runtime de BoxLang
+     */
+    public void function onLoad() {
+        try {
+            var rt = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+            var asyncSvc = rt.getAsyncService();
+            var keyClass = createObject( "java", "ortus.boxlang.runtime.scopes.Key" );
+            // Asegurar que el pool de hilos virtuales este disponible si no fue declarado previamente
+            if ( !asyncSvc.hasExecutor( keyClass.of( "chaos-pool" ) ) ) {
+                asyncSvc.newVirtualExecutor( keyClass.of( "chaos-pool" ), 50 );
+            }
+        } catch ( any e ) {
+            // Carga silenciosa en entornos con permisos restringidos
+        }
+    }
+
+    /**
+     * Disparado cuando el modulo se descarga del runtime de BoxLang
+     */
+    public void function onUnload() {
+        try {
+            var rt = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+            var cacheSvc = rt.getCacheService();
+            var keyClass = createObject( "java", "ortus.boxlang.runtime.scopes.Key" );
+            if ( cacheSvc.hasCache( keyClass.of( "faultgraph-l1" ) ) ) {
+                var fgCache = cacheSvc.getCache( keyClass.of( "faultgraph-l1" ) );
+                if ( !isNull( fgCache ) ) {
+                    fgCache.clear();
+                }
+            }
+        } catch ( any e ) {
+            // Limpieza resiliente
+        }
+    }
+
+}

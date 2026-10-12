@@ -1,0 +1,124 @@
+/**
+ * Assert - Utilidad pura de aserciones para BoxLang sin dependencias externas.
+ */
+class {
+
+    public any function isTrue( required any condition, string message = "Se esperaba true" ) {
+        if ( !arguments.condition ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        return this;
+    }
+
+    public any function isFalse( required any condition, string message = "Se esperaba false" ) {
+        if ( arguments.condition ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        return this;
+    }
+
+    public any function isEqual( required any expected, required any actual, string message = "" ) {
+        var match = false;
+        if ( isSimpleValue( arguments.expected ) && isSimpleValue( arguments.actual ) ) {
+            match = ( arguments.expected == arguments.actual );
+        } else if ( isStruct( arguments.expected ) && isStruct( arguments.actual ) ) {
+            match = ( jsonSerialize( arguments.expected ) == jsonSerialize( arguments.actual ) );
+        } else if ( isArray( arguments.expected ) && isArray( arguments.actual ) ) {
+            match = ( jsonSerialize( arguments.expected ) == jsonSerialize( arguments.actual ) );
+        } else {
+            match = ( arguments.expected == arguments.actual );
+        }
+
+        if ( !match ) {
+            var msg = len( arguments.message ) ? arguments.message : "Esperado: [" & toString( arguments.expected ) & "], pero fue: [" & toString( arguments.actual ) & "]";
+            throw( type = "AssertionFailed", message = msg );
+        }
+        return this;
+    }
+
+    public any function isNotEqual( required any expected, required any actual, string message = "" ) {
+        var match = ( arguments.expected == arguments.actual );
+        if ( match ) {
+            var msg = len( arguments.message ) ? arguments.message : "Se esperaba que fuera distinto a: [" & toString( arguments.expected ) & "]";
+            throw( type = "AssertionFailed", message = msg );
+        }
+        return this;
+    }
+
+    public any function isNullVal( any actual, string message = "Se esperaba null" ) {
+        if ( !structKeyExists( arguments, "actual" ) || isNull( arguments.actual ) ) {
+            return this;
+        }
+        var msg = len( arguments.message ) ? arguments.message : "Se esperaba null, pero fue: [" & toString( arguments.actual ) & "]";
+        throw( type = "AssertionFailed", message = msg );
+    }
+
+    public any function isNotNull( any actual, string message = "Se esperaba un valor no null" ) {
+        if ( structKeyExists( arguments, "actual" ) && !isNull( arguments.actual ) ) {
+            return this;
+        }
+        throw( type = "AssertionFailed", message = arguments.message );
+    }
+
+    public any function isNumericVal( required any actual, string message = "Se esperaba valor numerico" ) {
+        if ( !isNumeric( arguments.actual ) ) {
+            throw( type = "AssertionFailed", message = arguments.message & ". Recibido: " & toString( arguments.actual ) );
+        }
+        return this;
+    }
+
+    public any function isStructVal( required any actual, string message = "Se esperaba struct" ) {
+        if ( !isStruct( arguments.actual ) ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        return this;
+    }
+
+    public any function isArrayVal( required any actual, string message = "Se esperaba array" ) {
+        if ( !isArray( arguments.actual ) ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        return this;
+    }
+
+    public any function isNotEmpty( required any actual, string message = "Se esperaba valor no vacio" ) {
+        if ( isSimpleValue( arguments.actual ) && len( trim( arguments.actual ) ) == 0 ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        if ( isArray( arguments.actual ) && arrayLen( arguments.actual ) == 0 ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        if ( isStruct( arguments.actual ) && structCount( arguments.actual ) == 0 ) {
+            throw( type = "AssertionFailed", message = arguments.message );
+        }
+        return this;
+    }
+
+    public any function stringContains( required string needle, required string haystack, string message = "" ) {
+        if ( findNoCase( arguments.needle, arguments.haystack ) == 0 ) {
+            var msg = len( arguments.message ) ? arguments.message : "No se encontro [" & arguments.needle & "] en el texto evaluado";
+            throw( type = "AssertionFailed", message = msg );
+        }
+        return this;
+    }
+
+    public any function expectException( required any executableClosure, string expectedType = "", string message = "" ) {
+        var threw = false;
+        var thrownType = "";
+        try {
+            arguments.executableClosure();
+        } catch ( any e ) {
+            threw = true;
+            thrownType = e.type;
+            if ( len( arguments.expectedType ) && findNoCase( arguments.expectedType, thrownType ) == 0 ) {
+                throw( type = "AssertionFailed", message = "Se esperaba excepcion tipo [" & arguments.expectedType & "] pero se recibio [" & thrownType & "]: " & e.message );
+            }
+        }
+        if ( !threw ) {
+            var msg = len( arguments.message ) ? arguments.message : "Se esperaba que lanzara excepcion [" & arguments.expectedType & "], pero ejecuto sin error.";
+            throw( type = "AssertionFailed", message = msg );
+        }
+        return this;
+    }
+
+}

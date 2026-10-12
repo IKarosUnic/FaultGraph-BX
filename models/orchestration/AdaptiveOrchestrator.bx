@@ -1,0 +1,166 @@
+/**
+ * AdaptiveOrchestrator - Capa de Interoperabilidad, Automatizacion y Normalizacion en BoxLang.
+ *
+ * Mision:
+ *   1. Centraliza los contratos de comunicacion e interoperabilidad poliglota.
+ *   2. Normaliza diagnosticos, severidad, ubicacion, evidencia y remediacion en un esquema canonico.
+ *   3. Coordina analizadores especificos por lenguaje manteniendo bajo acoplamiento.
+ *   4. Ejecuta analisis trans-modulo identificando discrepancias de contrato entre Frontend y Backend.
+ *   5. Permite ejecucion concurrente segura mediante BoxLang.
+ */
+class {
+
+    public any function init( any config = null ) {
+        variables.config        = arguments.config;
+        variables.detector      = new models.language.LanguageDetector( arguments.config );
+        variables.registry      = new models.language.EcosystemRegistry();
+        variables.toolRegistry  = new models.orchestration.ToolCapabilityRegistry( arguments.config );
+        return this;
+    }
+
+    public any function getDetector() { return variables.detector; }
+    public any function getRegistry() { return variables.registry; }
+    public any function getToolRegistry() { return variables.toolRegistry; }
+
+    /**
+     * Normaliza un hallazgo o defecto de cualquier ecosistema al esquema unificado canonico.
+     */
+    public struct function normalizeDiagnostic( required struct rawIssue, string filePath = "", string language = "Unknown" ) {
+        var norm = {
+            "code"        : structKeyExists( arguments.rawIssue, "code" ) ? arguments.rawIssue.code : "GENERIC_DEFECT",
+            "severity"    : normalizeSeverity( structKeyExists( arguments.rawIssue, "severity" ) ? arguments.rawIssue.severity : "HIGH" ),
+            "cwe"         : structKeyExists( arguments.rawIssue, "cwe" ) ? arguments.rawIssue.cwe : "CWE-699",
+            "language"    : structKeyExists( arguments.rawIssue, "language" ) ? arguments.rawIssue.language : arguments.language,
+            "filePath"    : structKeyExists( arguments.rawIssue, "filePath" ) ? arguments.rawIssue.filePath : arguments.filePath,
+            "line"        : ( structKeyExists( arguments.rawIssue, "line" ) && isNumeric( arguments.rawIssue.line ) && val( arguments.rawIssue.line ) >= 1 ) ? val( arguments.rawIssue.line ) : 1,
+            "column"      : ( structKeyExists( arguments.rawIssue, "column" ) && isNumeric( arguments.rawIssue.column ) ) ? val( arguments.rawIssue.column ) : 1,
+            "evidence"    : structKeyExists( arguments.rawIssue, "evidence" ) ? arguments.rawIssue.evidence : "",
+            "description" : structKeyExists( arguments.rawIssue, "description" ) ? arguments.rawIssue.description : "Defecto detectado por orquestador poliglota",
+            "remediation" : structKeyExists( arguments.rawIssue, "remediation" ) ? arguments.rawIssue.remediation : "Aplicar buenas practicas defensivas del lenguaje.",
+            "confidence"  : structKeyExists( arguments.rawIssue, "confidence" ) ? arguments.rawIssue.confidence : 0.95,
+            "toolSource"  : structKeyExists( arguments.rawIssue, "toolSource" ) ? arguments.rawIssue.toolSource : "FaultGraph-BX"
+        };
+        return norm;
+    }
+
+    public string function normalizeSeverity( required string sev ) {
+        var u = uCase( trim( arguments.sev ) );
+        if ( u == "CRITICAL" || u == "HIGH" || u == "MEDIUM" || u == "LOW" || u == "INFO" ) {
+            return u;
+        }
+        if ( u == "ERROR" )   { return "HIGH"; }
+        if ( u == "WARNING" ) { return "MEDIUM"; }
+        if ( u == "NOTE" )    { return "INFO"; }
+        return "HIGH";
+    }
+
+    /**
+     * Analiza un archivo individual seleccionando el ecosistema adecuado y normalizando hallazgos.
+     */
+    public struct function analyzeFile( required string filePath, string content = "" ) {
+        var t0 = getTickCount();
+        var det = variables.detector.detectLanguage( arguments.filePath, arguments.content );
+
+        var fileText = arguments.content;
+        if ( len( fileText ) == 0 && fileExists( arguments.filePath ) ) {
+            fileText = fileRead( arguments.filePath );
+        }
+        var lines = listToArray( fileText, char( 10 ), true );
+
+        var normalizedIssues = [];
+        var eco = variables.registry.getEcosystem( det.language );
+
+        if ( !isNull( eco ) ) {
+            var rawIssues = eco.evaluateStaticRules( arguments.filePath, fileText, lines );
+            for ( var iss in rawIssues ) {
+                var nIss = normalizeDiagnostic( iss, arguments.filePath, det.language );
+                arrayAppend( normalizedIssues, nIss );
+            }
+        }
+
+        // Si es un archivo mixto (HTML con JS/CSS), analizar tambien los bloques embebidos
+        if ( det.isMixed ) {
+            for ( var mixedTech in det.mixedTechnologies ) {
+                if ( mixedTech.technology == "JavaScript" && variables.registry.hasEcosystem( "JavaScript" ) ) {
+                    var jsEco = variables.registry.getEcosystem( "JavaScript" );
+                    var jsIssues = jsEco.evaluateStaticRules( arguments.filePath, fileText, lines );
+                    for ( var jIss in jsIssues ) {
+                        jIss[ "description" ] = "[Embebido en " & det.language & "] " & jIss.description;
+                        arrayAppend( normalizedIssues, normalizeDiagnostic( jIss, arguments.filePath, "JavaScript (Mixed)" ) );
+                    }
+                }
+            }
+        }
+
+        return {
+            "ok"         : true,
+            "filePath"   : arguments.filePath,
+            "detection"  : det,
+            "durationMs" : getTickCount() - t0,
+            "issuesCount": arrayLen( normalizedIssues ),
+            "clean"      : arrayLen( normalizedIssues ) == 0,
+            "issues"     : normalizedIssues
+        };
+    }
+
+    /**
+     * Analiza correlaciones trans-modulo entre Frontend (JS/TS) y Backend (Java/BoxLang/Python).
+     * Detecta discrepancias de contrato de API, tipos incompatibles o endpoints desalineados.
+     */
+    public array function correlateCrossModuleContracts( required array scannedFiles ) {
+        var crossIssues = [];
+        var backendEndpoints = {};
+        var frontendCalls = [];
+
+        for ( var sf in arguments.scannedFiles ) {
+            var lang = structKeyExists( sf, "detection" ) && isStruct( sf.detection ) && structKeyExists( sf.detection, "language" )
+                ? sf.detection.language
+                : ( structKeyExists( sf, "language" ) ? sf.language : "BoxLang" );
+            var path = structKeyExists( sf, "filePath" ) ? sf.filePath : "";
+            var content = fileExists( path ) ? fileRead( path ) : "";
+
+            // 1. Detectar endpoints de backend (Java Spring, BoxLang ColdBox, Python FastAPI/Flask)
+            if ( lang == "Java" || lang == "BoxLang" || lang == "Python" ) {
+                // Anotaciones @PostMapping("/api/foo"), route("/api/foo")
+                var matches = reMatchNoCase( "(PostMapping|GetMapping|RequestMapping|route|action)\s*\(\s*[""']([^""']+)[""']", content );
+                for ( var m in matches ) {
+                    var endpointRoute = reReplaceNoCase( m, ".*[""']([^""']+)[""'].*", "\1" );
+                    backendEndpoints[ endpointRoute ] = { "file": path, "language": lang };
+                }
+            }
+
+            // 2. Detectar llamadas de frontend (fetch("/api/foo"), axios.post("/api/foo"))
+            if ( lang == "JavaScript" || lang == "TypeScript" ) {
+                var callMatches = reMatchNoCase( "(fetch|axios\.(get|post|put|delete))\s*\(\s*[""']([^""']+)[""']", content );
+                for ( var cm in callMatches ) {
+                    var callRoute = reReplaceNoCase( cm, ".*[""']([^""']+)[""'].*", "\1" );
+                    arrayAppend( frontendCalls, { "file": path, "route": callRoute, "language": lang } );
+                }
+            }
+        }
+
+        // 3. Contrastar llamadas del frontend contra endpoints del backend
+        for ( var fc in frontendCalls ) {
+            if ( structCount( backendEndpoints ) > 0 && !structKeyExists( backendEndpoints, fc.route ) && left( fc.route, 5 ) == "/api/" ) {
+                var crossIss = {
+                    "code"        : "CROSS_MODULE_API_MISMATCH",
+                    "severity"    : "HIGH",
+                    "cwe"         : "CWE-440",
+                    "language"    : "CrossModule",
+                    "filePath"    : fc.file,
+                    "line"        : 1,
+                    "column"      : 1,
+                    "evidence"    : "Ruta consumida: " & fc.route,
+                    "description" : "Discrepancia trans-modulo: Frontend (" & fc.language & ") invoca endpoint inexistente en backend '" & fc.route & "'.",
+                    "remediation" : "Sincronizar el contrato de API entre Frontend y Backend asegurando que la ruta exista en el controlador.",
+                    "confidence"  : 0.90,
+                    "toolSource"  : "AdaptiveOrchestrator.CrossModuleCorrelator"
+                };
+                arrayAppend( crossIssues, crossIss );
+            }
+        }
+
+        return crossIssues;
+    }
+
+}

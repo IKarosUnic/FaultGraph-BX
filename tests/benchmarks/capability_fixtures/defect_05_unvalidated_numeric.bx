@@ -1,0 +1,9 @@
+/**
+ * Known Defect: Direct arithmetic on unvalidated input (CWE-20)
+ */
+class {
+    function calculate() {
+        var surcharge = arguments.amount * variables.config.fallback.surchargePct;
+        return surcharge;
+    }
+}

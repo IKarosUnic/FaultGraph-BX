@@ -1,0 +1,85 @@
+/**
+ * PaymentService - servicio critico de cobros (aplicacion objetivo del reto INCIDENT ZERO).
+ *
+ * Flujo normal   : charge() -> gateway externo -> APPROVED
+ * Flujo degradado: gateway caido -> fallbackCharge() -> cola offline (QUEUED_OFFLINE)
+ *
+ * El flujo degradado casi nunca se ejercita en produccion, asi que su defecto
+ * permanece latente hasta el dia en que el gateway realmente cae.
+ */
+class {
+
+    public any function init( required struct config, any gateway ) {
+        variables.config       = arguments.config;
+        variables.offlineQueue = [];
+        variables.stats        = { charges: 0, approved: 0, fallbackCalls: 0 };
+
+        if ( structKeyExists( arguments, "gateway" ) && !isNull( arguments.gateway ) ) {
+            variables.gateway = arguments.gateway;
+        } else {
+            // Gateway por defecto: simula una respuesta sana del procesador de pagos.
+            variables.gateway = function( orderId, amount, currency ) {
+                return {
+                    "authCode" : "AUTH-" & ucase( left( hash( arguments.orderId ), 8 ) ),
+                    "status"   : "OK"
+                };
+            };
+        }
+        return this;
+    }
+
+    /**
+     * Cobra una orden. Si el gateway falla por CUALQUIER motivo (timeout, nulo, payload roto)
+     * delega en fallbackCharge() para no perder la venta.
+     */
+    public struct function charge( required string orderId, required any amount, string currency = "USD" ) {
+        variables.stats.charges = variables.stats.charges + 1;
+        try {
+            var response = variables.gateway( arguments.orderId, arguments.amount, arguments.currency );
+            variables.stats.approved = variables.stats.approved + 1;
+            return {
+                orderId  : arguments.orderId,
+                status   : "APPROVED",
+                channel  : "GATEWAY",
+                authCode : response.authCode,
+                amount   : arguments.amount,
+                currency : arguments.currency
+            };
+        } catch ( any gatewayError ) {
+            variables.stats.fallbackCalls = variables.stats.fallbackCalls + 1;
+            return fallbackCharge( arguments.orderId, arguments.amount, arguments.currency, gatewayError );
+        }
+    }
+
+    /**
+     * Cobro diferido: encola la orden y aplica un recargo por procesamiento offline.
+     */
+    public struct function fallbackCharge( required string orderId, required any amount, required string currency, required any cause ) {
+        // @fallback-begin
+        // Cobro diferido: se encola la orden y se suma el recargo configurado.
+        var surcharge = arguments.amount * variables.config.fallback.surchargePct;
+        var total     = arguments.amount + surcharge;
+        var queueName = variables.config.fallback.queueName;
+        arrayAppend( variables.offlineQueue, { orderId: arguments.orderId, total: total, queue: queueName } );
+        return {
+            orderId            : arguments.orderId,
+            status             : "QUEUED_OFFLINE",
+            channel            : queueName,
+            amount             : arguments.amount,
+            surcharge          : surcharge,
+            totalWithSurcharge : total,
+            currency           : arguments.currency,
+            cause              : arguments.cause.type
+        };
+        // @fallback-end
+    }
+
+    public array function getOfflineQueue() {
+        return variables.offlineQueue;
+    }
+
+    public struct function getStats() {
+        return variables.stats;
+    }
+
+}

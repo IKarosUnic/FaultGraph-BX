@@ -1,0 +1,112 @@
+/**
+ * FaultGraph-BX - CLI de Escaneo de Repositorios y Deteccion de Errores.
+ *
+ * Uso:
+ *   boxlang scan.bxs
+ *   set FAULTGRAPH_TARGET_PATH=c:/ruta/a/tu/repo && boxlang scan.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+cfg = new config.Config( rootDir );
+scanner = new models.RepositoryScanner( cfg );
+
+import ortus.boxlang.runtime.BoxRuntime;
+
+rawCliArgs = BoxRuntime.getInstance().getCliOptions().cliArgs() ?: [];
+cliTarget = "";
+cliPolyglot = false;
+cliSynergy = false;
+
+for ( i = 1; i <= arrayLen( rawCliArgs ); i++ ) {
+    argVal = rawCliArgs[ i ];
+    if ( i > 1 || !findNoCase( ".bxs", argVal ) ) {
+        if ( argVal == "--target" && i < arrayLen( rawCliArgs ) ) {
+            cliTarget = rawCliArgs[ i + 1 ];
+            i++;
+        } else if ( argVal == "--polyglot" ) {
+            cliPolyglot = true;
+        } else if ( argVal == "--synergy" ) {
+            cliSynergy = true;
+        } else if ( left( argVal, 2 ) != "--" && len( cliTarget ) == 0 ) {
+            cliTarget = argVal;
+        }
+    }
+}
+
+sys = createObject( "java", "java.lang.System" );
+envTarget = sys.getenv( "FAULTGRAPH_TARGET_PATH" );
+isPolyglot = cliPolyglot || ( !isNull( sys.getenv( "FAULTGRAPH_POLYGLOT" ) ) && sys.getenv( "FAULTGRAPH_POLYGLOT" ) == "1" );
+isSynergy  = cliSynergy  || ( !isNull( sys.getenv( "FAULTGRAPH_SYNERGY" ) ) && sys.getenv( "FAULTGRAPH_SYNERGY" ) == "1" );
+
+targetPath = ( len( trim( cliTarget ) ) > 0 ) ? ( reFind( "^([a-zA-Z]:|[\\/])", cliTarget ) ? cliTarget : ( rootDir & cliTarget ) ) : ( ( !isNull( envTarget ) && len( trim( envTarget ) ) ) ? trim( envTarget ) : ( rootDir & "target_app/" ) );
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: ESCANER DE REPOSITORIOS Y ERRORES   " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Objetivo     : " & targetPath );
+println( "Modo         : " & ( isPolyglot ? "Poliglota (Auto-deteccion Multilenguaje)" : "BoxLang Nativo" ) );
+println( "Sinergia     : " & ( isSynergy ? "Activada (Grafo Compartido + Superficie de Ataque)" : "Estandar" ) );
+println( "IA Local     : " & ( cfg.isLocalAiAvailable() ? cfg.getLocalAi().model : "desactivado (offline)" ) );
+println( "============================================================" );
+println( "" );
+
+if ( isSynergy ) {
+    graph = new models.synergy.SharedEvidenceGraph();
+    reconstructor = new models.adversary.AttackSurfaceReconstructor( cfg, graph );
+    surface = reconstructor.reconstruct( targetPath );
+    println( "[SINERGIA] Superficie reconstruida: " & surface.entryPointsCount & " endpoints, " & surface.sensitiveOperationsCount & " ops sensibles, " & surface.trustBoundariesCount & " limites." );
+}
+
+scanRes = isPolyglot ? scanner.scanPolyglotDirectory( targetPath, cfg.isLocalAiAvailable() ) : scanner.scanDirectory( targetPath, cfg.isLocalAiAvailable() );
+
+if ( !scanRes.ok ) {
+    println( "[ERROR] " & scanRes.error );
+    abort;
+}
+
+println( "Archivos evaluados     : " & scanRes.totalFiles );
+println( "Archivos limpios       : " & scanRes.cleanFiles );
+println( "Archivos con problemas : " & scanRes.vulnerableFiles );
+println( "Problemas detectados   : " & scanRes.totalIssues );
+println( "Tiempo de escaneo      : " & scanRes.durationMs & " ms" );
+println( "------------------------------------------------------------" );
+println( "DESGLOSE POR SEVERIDAD:" );
+println( "  CRITICAL : " & scanRes.summaryBySeverity.CRITICAL );
+println( "  HIGH     : " & scanRes.summaryBySeverity.HIGH );
+println( "  MEDIUM   : " & scanRes.summaryBySeverity.MEDIUM );
+println( "  LOW      : " & scanRes.summaryBySeverity.LOW );
+println( "------------------------------------------------------------" );
+println( "" );
+println( "DETALLE DE HALLAZGOS:" );
+
+for ( f in scanRes.files ) {
+    if ( f.clean ) {
+        println( "  [OK] " & f.fileName & " (Limpio - " & f.totalLines & " lineas)" );
+    } else {
+        println( "  [FAIL] " & f.fileName & " (" & f.issueCount & " problemas en " & f.totalLines & " lineas):" );
+        for ( iss in f.issues ) {
+            println( "     -> [L." & iss.line & " | " & iss.severity & "] " & iss.code & ": " & iss.description );
+            println( "        Evidencia   : " & iss.evidence );
+            println( "        Remediacion : " & iss.remediation );
+        }
+    }
+}
+
+// Guardar reportes formales
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+
+jsonPath = reportsDir & "repo-scan-report.json";
+mdPath   = reportsDir & "repo-scan-report.md";
+
+fileWrite( jsonPath, jsonSerialize( scanRes ) );
+fileWrite( mdPath, scanner.renderMarkdownReport( scanRes ) );
+
+println( "" );
+println( "============================================================" );
+println( "Reporte JSON : " & jsonPath );
+println( "Reporte MD   : " & mdPath );
+println( "============================================================" );

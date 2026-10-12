@@ -1,0 +1,132 @@
+/**
+ * ShadowTesterTest - Banco de pruebas para el motor de ejecucion sombra (ShadowTester.bx).
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testInstantiationAndDefaultPayloads();
+        testShadowRunApprovalOnHealthyCandidate();
+        testShadowRunRejectionOnRegressiveCandidate();
+        testLatencyToleranceEvaluation();
+    }
+
+    private void function testInstantiationAndDefaultPayloads() {
+        var id = "TC-ST-01";
+        var scenario = "Instanciacion y generacion de payloads sinteticos";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var st  = new models.ShadowTester( cfg );
+
+            var payloads = st.getDefaultPayloads();
+            variables.assert.isTrue( isArray( payloads ) );
+            variables.assert.isTrue( arrayLen( payloads ) >= 5, "Debe proveer al menos 5 casos limite" );
+
+            variables.reporter.record( id, scenario, "Payloads sinteticos para shadow testing", ">= 5 casos de prueba", "Inicializado con " & arrayLen( payloads ) & " payloads", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Payloads sinteticos", ">= 5 casos", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testShadowRunApprovalOnHealthyCandidate() {
+        var id = "TC-ST-02";
+        var scenario = "Aprobacion de despliegue cuando el candidato mitiga 100% de errores";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var st  = new models.ShadowTester( cfg );
+
+            // Servicio original simulado con fallos
+            var origMock = {
+                "processPayment": function( p ) {
+                    if ( structKeyExists( p, "channel" ) && p.channel == "FALLBACK" ) {
+                        throw( type="TypeMismatchException", message="Error en fallback" );
+                    }
+                    return { "status": "APPROVED", "amount": p.amount };
+                }
+            };
+
+            // Servicio candidato parcheado que maneja todo con exito
+            var candMock = {
+                "processPayment": function( p ) {
+                    return { "status": "APPROVED", "amount": val( p.amount ) };
+                }
+            };
+
+            var evalResult = st.evaluateShadowRun( origMock, candMock );
+
+            variables.assert.isTrue( evalResult.safeToDeploy, "Debe ser seguro para desplegar" );
+            variables.assert.isEqual( "APPROVED_FOR_RELEASE", evalResult.decision );
+            variables.assert.isTrue( evalResult.original.errorCount > 0, "El original debio tener errores" );
+            variables.assert.isEqual( 0, evalResult.candidate.errorCount, "El candidato debio tener 0 errores" );
+
+            variables.reporter.record( id, scenario, "Evaluacion sombra de candidato sano", "safeToDeploy=true, decision=APPROVED_FOR_RELEASE", "Decision: " & evalResult.decision, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Evaluacion candidato sano", "safeToDeploy=true", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testShadowRunRejectionOnRegressiveCandidate() {
+        var id = "TC-ST-03";
+        var scenario = "Rechazo inmediato y orden de rollback si el candidato aumenta errores";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var st  = new models.ShadowTester( cfg );
+
+            // Original estable
+            var origMock = {
+                "processPayment": function( p ) {
+                    return { "status": "APPROVED" };
+                }
+            };
+
+            // Candidato roto (regresion)
+            var candMock = {
+                "processPayment": function( p ) {
+                    throw( type="NullPointerException", message="Regresion introducida" );
+                }
+            };
+
+            var evalResult = st.evaluateShadowRun( origMock, candMock );
+
+            variables.assert.isFalse( evalResult.safeToDeploy, "No debe ser seguro para desplegar" );
+            variables.assert.isTrue( evalResult.regressionDetected, "Debe detectar la regresion" );
+            variables.assert.isEqual( "REJECTED_REGRESSION_DETECTED", evalResult.decision );
+
+            variables.reporter.record( id, scenario, "Deteccion y rechazo de regresion", "safeToDeploy=false, regressionDetected=true", "Regresion contenida (" & evalResult.decision & ")", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Deteccion regresion", "safeToDeploy=false", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testLatencyToleranceEvaluation() {
+        var id = "TC-ST-04";
+        var scenario = "Evaluacion de tolerancia de latencia y sobrecoste de computo";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var st  = new models.ShadowTester( cfg, 20 );
+
+            var origMock = { "processPayment": function( p ) { return { "status": "OK" }; } };
+            var candMock = { "processPayment": function( p ) { return { "status": "OK" }; } };
+
+            var evalResult = st.evaluateShadowRun( origMock, candMock );
+            variables.assert.isTrue( structKeyExists( evalResult, "original" ) );
+            variables.assert.isTrue( structKeyExists( evalResult, "candidate" ) );
+            variables.assert.isTrue( structKeyExists( evalResult, "rationale" ) );
+
+            variables.reporter.record( id, scenario, "Tolerancia de latencia calculada", "Metricas de latencia presentes", "Latencia evaluada correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Tolerancia latencia", "Metricas presentes", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

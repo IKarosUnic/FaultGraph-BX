@@ -1,0 +1,49 @@
+/**
+ * FaultGraph-BX - punto de entrada CLI.
+ *
+ *   boxlang run.bxs
+ *
+ * Todas las dependencias se instancian aqui y se inyectan en el IncidentDirector, de modo
+ * que la resolucion de clases siempre parte de la raiz del proyecto.
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+
+cfg    = new config.Config( rootDir );
+healer = new models.Healer( cfg );
+
+// Fabrica del servicio ORIGINAL (el que tiene el fallo latente)
+originalFactory = function( struct serviceConfig, any gateway ) {
+    return new target_app.PaymentService( serviceConfig, gateway );
+};
+
+chaos = new models.ChaosEngine(
+    originalFactory,
+    cfg.getTargetServiceConfig(),
+    "PaymentService (original)"
+);
+
+// El motor de verificacion se crea solo cuando el archivo parcheado ya existe en disco
+verifyFactory = function() {
+    var patchedFactory = function( struct serviceConfig, any gateway ) {
+        return new target_app.PaymentServicePatched( serviceConfig, gateway );
+    };
+    return new models.ChaosEngine(
+        patchedFactory,
+        cfg.getTargetServiceConfig(),
+        "PaymentService (parcheado)"
+    );
+};
+
+knowledgeBase = new models.KnowledgeBase( cfg );
+specializedAi = new models.SpecializedAIEngine( cfg, null, null, knowledgeBase );
+
+director = new agents.IncidentDirector( cfg, healer, chaos, verifyFactory, null, knowledgeBase, specializedAi );
+summary  = director.run();
+
+println( "" );
+if ( summary.verified ) {
+    println( "RESULTADO FINAL: OK - fallback verificado bajo caos." );
+} else {
+    println( "RESULTADO FINAL: INCIDENTE ABIERTO - revisa el reporte en reports/." );
+}

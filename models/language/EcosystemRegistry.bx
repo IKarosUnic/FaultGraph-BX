@@ -1,0 +1,98 @@
+/**
+ * EcosystemRegistry - Registro central de ecosistemas de lenguajes de programacion y diccionarios modulares.
+ *
+ * Administra los modulos de conocimiento por lenguaje, permitiendo extension modular,
+ * versionado, exportacion a KnowledgeBase y resolucion de analizadores estaticos.
+ */
+class {
+
+    public any function init() {
+        variables.ecosystems = {};
+        registerDefaults();
+        return this;
+    }
+
+    private void function registerDefaults() {
+        variables.ecosystems[ "BoxLang" ]               = new models.language.ecosystems.BoxLangEcosystem();
+        variables.ecosystems[ "CFML" ]                  = variables.ecosystems[ "BoxLang" ];
+        variables.ecosystems[ "Java" ]                  = new models.language.ecosystems.JavaEcosystem();
+        variables.ecosystems[ "Python" ]                = new models.language.ecosystems.PythonEcosystem();
+        variables.ecosystems[ "JavaScript" ]            = new models.language.ecosystems.JavaScriptTypeScriptEcosystem();
+        variables.ecosystems[ "TypeScript" ]            = variables.ecosystems[ "JavaScript" ];
+        variables.ecosystems[ "Cpp" ]                   = new models.language.ecosystems.CppEcosystem();
+        variables.ecosystems[ "C" ]                     = variables.ecosystems[ "Cpp" ];
+        variables.ecosystems[ "Go" ]                    = new models.language.ecosystems.GoEcosystem();
+        variables.ecosystems[ "Rust" ]                  = new models.language.ecosystems.RustEcosystem();
+    }
+
+    /**
+     * Registra un nuevo ecosistema de lenguaje o reemplaza uno existente de forma controlada.
+     */
+    public void function registerEcosystem( required string languageName, required any ecosystemInstance ) {
+        variables.ecosystems[ arguments.languageName ] = arguments.ecosystemInstance;
+    }
+
+    /**
+     * Obtiene el modulo de ecosistema correspondiente a un lenguaje.
+     */
+    public any function getEcosystem( required string languageName ) {
+        if ( structKeyExists( variables.ecosystems, arguments.languageName ) ) {
+            return variables.ecosystems[ arguments.languageName ];
+        }
+        return null;
+    }
+
+    public boolean function hasEcosystem( required string languageName ) {
+        return structKeyExists( variables.ecosystems, arguments.languageName );
+    }
+
+    public array function getSupportedLanguages() {
+        return structKeyArray( variables.ecosystems );
+    }
+
+    /**
+     * Exporta todas las entradas de conocimiento de todos los ecosistemas registrados
+     * en el formato canónico exigido por KnowledgeBase.bx.
+     */
+    public array function exportToKnowledgeBaseEntries() {
+        var entries = [];
+        var processedCodes = {};
+
+        for ( var lang in variables.ecosystems ) {
+            var eco = variables.ecosystems[ lang ];
+            var meta = eco.getMetadata();
+            var errors = eco.getCommonErrorsCatalog();
+
+            for ( var err in errors ) {
+                if ( structKeyExists( processedCodes, err.code ) ) {
+                    continue;
+                }
+                processedCodes[ err.code ] = true;
+
+                var kbEntry = {
+                    "id"                : "KB-ECO-" & replace( err.code, "_", "-", "all" ),
+                    "title"             : "[" & meta.name & "] " & err.title,
+                    "category"          : "ECOSYSTEM_" & uCase( replace( meta.name, "/", "_", "all" ) ),
+                    "source"            : meta.provenance,
+                    "date"              : meta.lastUpdated,
+                    "version"           : meta.version,
+                    "reliability"       : meta.reliability,
+                    "scope"             : "STATIC_ANALYSIS",
+                    "verificationLevel" : "DOCUMENTED_FACT",
+                    "tags"              : [ lcase( meta.name ), lcase( err.code ), lcase( err.cwe ), "remediation", "ecosystem" ],
+                    "summary"           : err.title & " (" & err.cwe & "): " & err.symptoms,
+                    "details"           : "Causa raiz: " & err.rootCause & ". Severidad: " & err.severity & ".",
+                    "recommendations"   : err.remediation,
+                    "codeSnippets"      : [
+                        "// Vulnerable:\n" & err.exampleVuln & "\n\n// Remediado:\n" & err.exampleFixed
+                    ]
+                };
+
+                arrayAppend( entries, kbEntry );
+            }
+        }
+
+        return entries;
+    }
+
+}

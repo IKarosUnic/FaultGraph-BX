@@ -1,0 +1,26 @@
+/**
+ * FaultGraph-BX - Evaluacion de Diagnosticos con 30 Casos Sinteticos (Fase C).
+ *
+ *   boxlang tests/evaluate_diagnostics.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+rootDir = replace( rootDir, "tests\", "" );
+rootDir = replace( rootDir, "tests/", "" );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+evaluator = new tests.benchmarks.DiagnosticEvaluator( rootDir );
+metrics   = evaluator.evaluateAll();
+evaluator.printReport( metrics );
+
+// Guardar reporte JSON formal
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "diagnostic-evaluation-30cases.json";
+fileWrite( outputPath, jsonSerialize( metrics ) );
+println( "Metricas guardadas en: " & outputPath );
+println( "" );

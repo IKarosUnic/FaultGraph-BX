@@ -1,0 +1,113 @@
+/**
+ * RustEcosystem - Modulo de conocimiento especializado y analizador estatico para Rust.
+ *
+ * Fuente: The Rust Programming Language (The Book), Rust Reference, RustSec Advisory DB, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "Rust";
+        variables.version     = "Rust 2018 / 2021 Edition";
+        variables.provenance  = "Rust Foundation / Rust Security Response WG / RustSec";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "cargo build", "rustc" ],
+            "testFrameworks" : [ "cargo test", "criterion" ],
+            "packageManagers": [ "crates.io (cargo)" ],
+            "linters"        : [ "clippy", "rustfmt", "cargo-audit" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "RUST_UNCHECKED_UNWRAP_PANIC",
+                "cwe"         : "CWE-754",
+                "severity"    : "HIGH",
+                "title"       : "Panico no controlado en produccion por .unwrap() o .expect()",
+                "symptoms"    : "El proceso finaliza con 'thread panicked at unwrap on None / Err'",
+                "rootCause"   : "Uso de .unwrap() en Option o Result sin propagacion mediante operador '?'",
+                "remediation" : "Propagar errores con el operador '?' o gestionar con match / if let",
+                "exampleVuln" : "let val = map.get(key).unwrap();",
+                "exampleFixed": "let val = map.get(key).ok_or(CustomError::NotFound)?;"
+            },
+            {
+                "code"        : "RUST_UNSAFE_BLOCK_RISK",
+                "cwe"         : "CWE-119",
+                "severity"    : "HIGH",
+                "title"       : "Bloque unsafe sin garantias de invariantes de seguridad de memoria",
+                "symptoms"    : "Segmentation fault o violaciones del borrow checker en codigo unsafe",
+                "rootCause"   : "Desreferencia de punteros crudos (*const T, *mut T) sin validacion de nulidad o alineacion",
+                "remediation" : "Documentar los invariantes con '// SAFETY:' y encapsular en abstracciones seguras RAII",
+                "exampleVuln" : "unsafe { *raw_ptr = 42; }",
+                "exampleFixed": "// SAFETY: raw_ptr se garantiza no nulo y alineado por caller\nunsafe { if !raw_ptr.is_null() { *raw_ptr = 42; } }"
+            },
+            {
+                "code"        : "RUST_COMMAND_INJECTION_SH",
+                "cwe"         : "CWE-78",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion de comandos con Command::new('sh')",
+                "symptoms"    : "Ejecucion de comandos de shell arbitrarios",
+                "rootCause"   : "Command::new('sh').arg('-c').arg(format!('ping {}', host))",
+                "remediation" : "Invocar binarios directamente con Command::new('ping').arg(host)",
+                "exampleVuln" : "Command::new('sh').args(['-c', &format!('ping {}', host)]).output()",
+                "exampleFixed": "Command::new('ping').args(['-c', '1', host]).output()"
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( left( trimmed, 2 ) == "//" || len( trimmed ) == 0 ) {
+                continue;
+            }
+
+            // 1. Inyeccion de comandos con Command::new("sh") o Command::new("cmd")
+            if ( reFindNoCase( "Command::new\s*\(\s*""(sh|bash|cmd)""\s*\)", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "RUST_COMMAND_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "Rust",
+                    "description": "Invocacion de shell mediante Command::new susceptible a command injection (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Invocar directamente el binario deseado sin subshell."
+                } );
+            }
+
+            // 2. Secretos hardcodeados
+            if ( reFindNoCase( "(api_key|secret_key|password)\s*:\s*&str\s*=\s*""[A-Za-z0-9_\-\.]{16,}""", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "RUST_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "Rust",
+                    "description": "Secreto hardcodeado en codigo Rust (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Cargar secreto mediante std::env::var()."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

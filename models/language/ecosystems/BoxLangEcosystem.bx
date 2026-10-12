@@ -1,0 +1,120 @@
+/**
+ * BoxLangEcosystem - Modulo de conocimiento especializado y analizador estatico
+ * determinista para BoxLang (v1.18+) y compatibilidad CFML.
+ *
+ * Fuente: Ortus Solutions BoxLang Docs, BoxLang Language Reference, CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "BoxLang";
+        variables.version     = "BoxLang 1.18.0+ / JVM 17-21";
+        variables.provenance  = "Ortus Solutions / BoxLang Language Specifications";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "BoxLang CLI (boxlang)", "CommandBox (box)" ],
+            "testFrameworks" : [ "TestBox", "FaultGraph-BX Runner" ],
+            "packageManagers": [ "ForgeBox", "CommandBox" ],
+            "compilers"      : [ "BoxParser AST Compiler" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "NULL_CONFIG_DEREF",
+                "cwe"         : "CWE-476",
+                "severity"    : "CRITICAL",
+                "title"       : "Desreferencia ciega de estructuras sin validacion de existencia",
+                "symptoms"    : "KeyNotFoundException al acceder a cadenas de struct variables.config.a.b",
+                "rootCause"   : "Acceso anidado sin structKeyExists() ni operador de navegacion segura '?.'",
+                "remediation" : "Utilizar structKeyExists(parent, key) o operador '?.' con valores por defecto explicitos",
+                "exampleVuln" : "var q = variables.config.fallback.queueName;",
+                "exampleFixed": "var q = variables.config?.fallback?.queueName ?: 'default-queue';"
+            },
+            {
+                "code"        : "TYPE_MISMATCH_NUMERIC",
+                "cwe"         : "CWE-20",
+                "severity"    : "HIGH",
+                "title"       : "BoxCastException por operacion aritmetica sobre strings formateados",
+                "symptoms"    : "BoxCastException: Can't cast [2.5%] to a Number",
+                "rootCause"   : "Multiplicar directamente valores que contienen caracteres de porcentaje o simbolos monetarios",
+                "remediation" : "Limpiar la cadena con replace(), validar con isNumeric() y dividir por 100 si contiene porcentaje",
+                "exampleVuln" : "var fee = amount * config.fallback.surchargePct;",
+                "exampleFixed": "var clean = replace( config.fallback.surchargePct, '%', '', 'all' );\nvar fee = amount * ( isNumeric(clean) ? clean/100 : 0.025 );"
+            },
+            {
+                "code"        : "SQL_INJECTION_RISK",
+                "cwe"         : "CWE-89",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion SQL por concatenacion o interpolacion dinamica",
+                "symptoms"    : "Manipulacion de sentencias en queryExecute() mediante concatenacion o signos de numeral '##'",
+                "rootCause"   : "queryExecute('SELECT * FROM t WHERE id = ' & id)",
+                "remediation" : "Utilizar queryExecute(sql, params) pasando un struct o array de parametros",
+                "exampleVuln" : "queryExecute('SELECT * FROM users WHERE id = ' & args.id);",
+                "exampleFixed": "queryExecute('SELECT * FROM users WHERE id = :id', { id: args.id });"
+            },
+            {
+                "code"        : "EMPTY_CATCH_BLOCK",
+                "cwe"         : "CWE-390",
+                "severity"    : "MEDIUM",
+                "title"       : "Bloque catch vacio que silencia excepciones en tiempo de ejecucion",
+                "symptoms"    : "Errores ocultos que impiden detectar contingencias en produccion",
+                "rootCause"   : "try { ... } catch ( any e ) { }",
+                "remediation" : "Registrar la excepcion o relanzarla mediante throw() controlado",
+                "exampleVuln" : "catch ( any e ) { }",
+                "exampleFixed": "catch ( any e ) { logger.error('Fallo en contingencia', e); }"
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+            if ( left( trimmed, 2 ) == "//" || len( trimmed ) == 0 ) continue;
+
+            // 1. Inyeccion SQL por concatenacion o interpolacion dinamica
+            if ( reFindNoCase( "queryExecute\s*\(\s*[""'][^""']*['""\s]*&", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "SQL_INJECTION_RISK",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-89",
+                    "language"   : "BoxLang",
+                    "description": "Inyeccion SQL por concatenacion de strings en queryExecute (CWE-89).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar parametros de sustitucion nombrados :param o posicionales."
+                } );
+            }
+
+            // 2. Bloque catch vacio
+            if ( reFindNoCase( "catch\s*\([^)]+\)\s*\{\s*\}", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "EMPTY_CATCH_BLOCK",
+                    "severity"   : "MEDIUM",
+                    "cwe"        : "CWE-390",
+                    "language"   : "BoxLang",
+                    "description": "Bloque catch vacio silenciando excepciones en tiempo de ejecucion (CWE-390).",
+                    "evidence"   : trimmed,
+                    "remediation": "Registrar la excepcion o relanzar con throw()."
+                } );
+            }
+        }
+        return issues;
+    }
+
+}

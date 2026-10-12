@@ -1,0 +1,90 @@
+/**
+ * PersistenceRecoveryTest - Suite B7: Persistencia, recuperacion e integridad de reportes.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testReportsDirectoryIntegrity();
+        testJsonReportSchemaAndReloadability();
+        testMarkdownReportFormatting();
+    }
+
+    private void function testReportsDirectoryIntegrity() {
+        var id = "TC-B7-01";
+        var scenario = "Verificacion de existencia y permisos de escritura en reports/";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dir = cfg.getReportsDir();
+            variables.assert.isTrue( directoryExists( dir ), "Directorio reports/ debe existir" );
+
+            var testFile = dir & "test-probe-" & getTickCount() & ".tmp";
+            fileWrite( testFile, "probe" );
+            variables.assert.isTrue( fileExists( testFile ) );
+            fileDelete( testFile );
+
+            variables.reporter.record( id, scenario, "Verificacion de carpeta reports/", "Directorio accesible con permisos de lectura/escritura", "Permisos de E/S confirmados en " & dir, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Directorio reports/", "Lectura/escritura", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testJsonReportSchemaAndReloadability() {
+        var id = "TC-B7-02";
+        var scenario = "Recuperacion y deserializacion de reportes JSON existentes en reports/";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dir = cfg.getReportsDir();
+            var jsonFiles = directoryList( dir, false, "path", "incident-*.json" );
+            variables.assert.isTrue( arrayLen( jsonFiles ) > 0, "Debe existir al menos un reporte JSON generado" );
+
+            var lastJsonPath = jsonFiles[ arrayLen( jsonFiles ) ];
+            var rawContent   = fileRead( lastJsonPath );
+            var data         = jsonDeserialize( rawContent );
+
+            variables.assert.isStructVal( data );
+            variables.assert.isTrue( structKeyExists( data, "verified" ) );
+            variables.assert.isTrue( structKeyExists( data, "before" ) );
+            variables.assert.isTrue( structKeyExists( data, "diagnosis" ) );
+            variables.assert.isTrue( structKeyExists( data, "after" ) );
+            variables.assert.isTrue( structKeyExists( data, "patch" ) );
+
+            variables.reporter.record( id, scenario, "Recuperar " & getFileFromPath( lastJsonPath ), "JSON valido con secciones verified, before, diagnosis, after, patch", "Reporte deserializado correctamente: verified=" & data.verified, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Recuperar reporte JSON", "JSON valido", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMarkdownReportFormatting() {
+        var id = "TC-B7-03";
+        var scenario = "Integridad de reportes Markdown generados (bloques Mermaid y diff)";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dir = cfg.getReportsDir();
+            var mdFiles = directoryList( dir, false, "path", "incident-*.md" );
+            variables.assert.isTrue( arrayLen( mdFiles ) > 0, "Debe existir al menos un reporte Markdown generado" );
+
+            var lastMdPath = mdFiles[ arrayLen( mdFiles ) ];
+            var content    = fileRead( lastMdPath );
+
+            variables.assert.stringContains( char( 35 ) & " FaultGraph-BX - Reporte de incidente", content );
+            variables.assert.stringContains( "```mermaid", content );
+            variables.assert.stringContains( "```diff", content );
+            variables.assert.stringContains( "| Escenario | Antes | Despues |", content );
+
+            variables.reporter.record( id, scenario, "Inspeccionar " & getFileFromPath( lastMdPath ), "Presencia de titulo, bloques mermaid, diff y tabla de caos", "Formato Markdown valido con diagramas y diff", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Reporte Markdown", "Formato valido", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

@@ -1,0 +1,8 @@
+/**
+ * Clean Example: Safe struct dereferencing with Elvis operator
+ */
+class {
+    function getQueue() {
+        return variables.config?.fallback?.queueName ?: "default-queue";
+    }
+}

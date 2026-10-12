@@ -1,0 +1,42 @@
+{
+    "name": "FaultGraph-BX",
+    "slug": "faultgraph-bx",
+    "version": "1.0.0",
+    "author": "Hackathon Ortus Solutions x ANIA - Reto 01 INCIDENT ZERO",
+    "shortDescription": "Sistema autonomo de caos y auto-reparacion para BoxLang",
+    "description": "FaultGraph-BX inspecciona un servicio con un fallo latente en su fallback, inyecta perturbaciones controladas (timeouts, nulos, payloads rotos, configuraciones invalidas), construye un grafo de propagacion de fallos, calcula la causa raiz y genera un parche verificado re-ejecutando el mismo caos contra el codigo corregido.",
+    "type": "boxlang-modules",
+    "keywords": [ "boxlang", "chaos-engineering", "self-healing", "multi-agent", "incident-response", "ast", "sarif" ],
+    "license": "MIT",
+    "homepage": "https://github.com/IKarosUnic/FaultGraph-BX",
+    "documentation": "https://github.com/IKarosUnic/FaultGraph-BX#readme",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/IKarosUnic/FaultGraph-BX.git"
+    },
+    "bugs": "https://github.com/IKarosUnic/FaultGraph-BX/issues",
+    "boxlang": {
+        "minVersion": "1.18.0"
+    },
+    "dependencies": {},
+    "devDependencies": {},
+    "scripts": {
+        "demo": "boxlang run.bxs",
+        "demo:offline": "set FAULTGRAPH_OFFLINE=1 && boxlang run.bxs",
+        "audit": "boxlang audit.bxs",
+        "test": "boxlang tests/runner.bxs",
+        "benchmark": "boxlang tests/evaluate_diagnostics.bxs",
+        "benchmark:models": "boxlang tests/evaluate_models.bxs",
+        "benchmark:synergy": "boxlang tests/benchmark_synergy.bxs",
+        "benchmark:paradigms": "boxlang benchmark_paradigms.bxs",
+        "intake": "boxlang intake.bxs",
+        "research": "boxlang research.bxs",
+        "knowledge": "boxlang knowledge.bxs",
+        "scan": "boxlang scan.bxs",
+        "diagnose": "boxlang diagnose_log.bxs target_app/sample_crash.log",
+        "compile": "boxlang compile.bxs",
+        "ci": "boxlang ci.bxs",
+        "dashboard": "boxlang dashboard.bxs"
+    },
+    "ignore": [ "reports/**", "target_app/PaymentServicePatched.bx", "scratch/**" ]
+}

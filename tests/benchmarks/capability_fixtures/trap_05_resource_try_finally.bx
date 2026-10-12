@@ -1,0 +1,14 @@
+/**
+ * False-Positive Trap: Stream opened and closed in try/finally
+ * Line with new FileInputStream does not have close() on same line!
+ */
+class {
+    function readFileSafely( required string filePath ) {
+        var is = new FileInputStream( arguments.filePath );
+        try {
+            return is.read();
+        } finally {
+            is.close();
+        }
+    }
+}

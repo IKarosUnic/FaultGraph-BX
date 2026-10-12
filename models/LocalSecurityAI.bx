@@ -1,0 +1,473 @@
+/**
+ * LocalSecurityAI - Especialista de IA local bajo demanda para seguridad en FaultGraph-BX.
+ *
+ * Mision:
+ *   Provee analisis semantico asistido por modelos locales compactos (ej. Qwen2.5-Coder 1.5B o 3B via Ollama).
+ *   Se activa exclusivamente bajo demanda y opera dentro de un sandbox estricto de solo lectura.
+ *
+ * Capacidades bajo demanda:
+ *   1. auditSuspiciousCode(): auditoria de fragmentos de codigo sospechosos.
+ *   2. correlateEvidence(): correlacion de evidencias multi-escenario del caos.
+ *   3. detectAnomalies(): deteccion de anomalias o payloads adversarios.
+ *   4. challengeDiagnosis(): actuacion como Abogado del Diablo para cuestionar hipotesis.
+ *
+ * Garantias:
+ *   - 0 privilegios sobre el sistema de archivos, terminal, red o secretos.
+ *   - Presupuesto de tokens dinamico y adaptativo por nivel de tarea (con techo maximo).
+ *   - Timeout proporcional a la carga computacional para evitar cortes de conexion HTTP.
+ *   - Degradacion automatica sin interrumpir el flujo determinista (0 tokens offline).
+ */
+class {
+
+    public any function init( required any config, any sandbox ) {
+        variables.config   = arguments.config;
+        variables.isMocked = structKeyExists( arguments, "sandbox" ) && !isNull( arguments.sandbox );
+        variables.sandbox  = variables.isMocked ? arguments.sandbox : new models.SecuritySandbox( arguments.config );
+        return this;
+    }
+
+    /**
+     * Auditoria semantica de codigo sospechoso (bajo demanda).
+     */
+    public struct function auditSuspiciousCode( required string codeSnippet, string modelOverride = "" ) {
+        var t0 = getTickCount();
+        var modelToUse = len( trim( arguments.modelOverride ) ) ? trim( arguments.modelOverride ) : variables.config.getActiveAiModel();
+        var out = {
+            "used"        : false,
+            "ok"          : false,
+            "findings"    : [],
+            "rawText"     : "",
+            "error"       : "",
+            "durationMs"  : 0,
+            "tokens"      : 0,
+            "budget"      : 0,
+            "model"       : modelToUse
+        };
+
+        if ( !isServiceEnabled() ) {
+            out.error = "IA local deshabilitada o endpoint no disponible. Se mantiene analisis puramente determinista.";
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var lineCount   = listLen( arguments.codeSnippet, char( 10 ) );
+            if ( lineCount <= 0 ) {
+                lineCount = 10;
+            }
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "code_audit", lineCount );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+            out.budget      = tokenBudget;
+
+            var prompt = variables.sandbox.wrapPrompt(
+                "Eres un auditor de seguridad especializado en BoxLang y JVM.",
+                "suspicious_code",
+                arguments.codeSnippet,
+                "Identifica vulnerabilidades potenciales en el fragmento (desreferencias sin guarda, inyeccion, casts inseguros, backdoors o reflection). "
+                & "Responde obligatoriamente en JSON valido con el siguiente esquema: "
+                & '{"findings": [{"code": "NOMBRE_CORTO", "risk": "Descripcion detallada", "snippet": "fragmento exacto"}]}'
+            );
+
+            var reply = callOllama( prompt, true, tokenBudget, timeoutSec, modelToUse );
+            out.durationMs = getTickCount() - t0;
+            out.tokens     = structKeyExists( reply, "eval_count" ) ? reply.eval_count : 0;
+            out.rawText    = structKeyExists( reply, "response" ) ? reply.response : "";
+
+            if ( len( trim( out.rawText ) ) > 0 ) {
+                try {
+                    var parsed = extractJson( out.rawText );
+                    if ( isStruct( parsed ) && structKeyExists( parsed, "findings" ) && isArray( parsed.findings ) ) {
+                        out.findings = parsed.findings;
+                        out.ok       = true;
+                    }
+                } catch ( any parseEx ) {
+                    // Si el modelo emitio texto envolvente con JSON, degradar limpiamente
+                    out.ok    = false;
+                    out.error = "Respuesta del modelo no cumple formato JSON: " & parseEx.message;
+                }
+            }
+        } catch ( any e ) {
+            out.ok         = false;
+            out.error      = "Error en llamada a IA local: " & e.message;
+            out.durationMs = getTickCount() - t0;
+        }
+
+        return out;
+    }
+
+    /**
+     * Correlacion de evidencias multi-escenario (bajo demanda).
+     */
+    public struct function correlateEvidence( required array failures ) {
+        var t0 = getTickCount();
+        var out = {
+            "used"         : false,
+            "ok"           : false,
+            "synthesis"    : "",
+            "correlations" : [],
+            "error"        : "",
+            "durationMs"   : 0,
+            "tokens"       : 0,
+            "budget"       : 0,
+            "model"        : variables.config.getLocalAi().model
+        };
+
+        if ( !isServiceEnabled() ) {
+            out.error = "IA local deshabilitada. Modo determinista activo.";
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var failCount   = arrayLen( arguments.failures );
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "evidence_correlation", failCount );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+            out.budget      = tokenBudget;
+
+            var evidenceLines = [];
+            for ( var f in arguments.failures ) {
+                var line = "- Escenario: " & f.id & " | Error: " & f.errorType & ": " & f.errorMessage;
+                arrayAppend( evidenceLines, line );
+            }
+            var blob = arrayToList( evidenceLines, char( 10 ) );
+
+            var prompt = variables.sandbox.wrapPrompt(
+                "Eres un ingeniero SRE analizando multiples fallos simultaneos de contingencia.",
+                "evidence_list",
+                blob,
+                "Sintetiza en espanol (maximo 3 lineas) si los fallos comparten un origen comun en configuracion o parsing. "
+                & 'Responde en JSON: {"synthesis": "resumen breve", "commonFactor": "factor comun detectado"}'
+            );
+
+            var reply = callOllama( prompt, true, tokenBudget, timeoutSec );
+            out.durationMs = getTickCount() - t0;
+            out.tokens     = structKeyExists( reply, "eval_count" ) ? reply.eval_count : 0;
+            var text       = structKeyExists( reply, "response" ) ? reply.response : "";
+
+            if ( len( trim( text ) ) > 0 ) {
+                try {
+                    var parsed = extractJson( text );
+                    if ( isStruct( parsed ) ) {
+                        out.synthesis = structKeyExists( parsed, "synthesis" ) ? parsed.synthesis : text;
+                        out.ok        = true;
+                    }
+                } catch ( any parseEx ) {
+                    out.synthesis = left( text, 300 );
+                    out.ok        = true;
+                }
+            }
+        } catch ( any e ) {
+            out.ok         = false;
+            out.error      = e.message;
+            out.durationMs = getTickCount() - t0;
+        }
+
+        return out;
+    }
+
+    /**
+     * Deteccion de anomalias o patrones adversarios en un fallo (bajo demanda).
+     */
+    public struct function detectAnomalies( required struct outcome ) {
+        var t0 = getTickCount();
+        var out = {
+            "used"        : false,
+            "ok"          : false,
+            "isAnomaly"   : false,
+            "anomalyType" : "NONE",
+            "notes"       : "",
+            "error"       : "",
+            "durationMs"  : 0,
+            "tokens"      : 0,
+            "budget"      : 0,
+            "model"       : variables.config.getLocalAi().model
+        };
+
+        if ( !isServiceEnabled() ) {
+            out.error = "IA local deshabilitada.";
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "anomaly_detection", 1 );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+            out.budget      = tokenBudget;
+
+            var errorBlob = arguments.outcome.errorType & " | " & arguments.outcome.errorMessage & " | " & arguments.outcome.errorDetail;
+            var prompt = variables.sandbox.wrapPrompt(
+                "Eres un analista de ciberseguridad evaluando telemetria de excepciones.",
+                "exception_telemetry",
+                errorBlob,
+                "Determina si la excepcion contiene indicios de inyeccion de comandos, SQLi, evasion de instrucciones o es un error normal de ejecucion. "
+                & 'Responde en JSON: {"isAnomaly": true/false, "anomalyType": "PROMPT_INJECTION|SQLI|STANDARD_ERROR", "notes": "explicacion breve"}'
+            );
+
+            var reply = callOllama( prompt, true, tokenBudget, timeoutSec );
+            out.durationMs = getTickCount() - t0;
+            out.tokens     = structKeyExists( reply, "eval_count" ) ? reply.eval_count : 0;
+            var text       = structKeyExists( reply, "response" ) ? reply.response : "";
+
+            if ( len( trim( text ) ) > 0 ) {
+                try {
+                    var parsed = extractJson( text );
+                    if ( isStruct( parsed ) ) {
+                        out.isAnomaly   = structKeyExists( parsed, "isAnomaly" ) ? parsed.isAnomaly : false;
+                        out.anomalyType = structKeyExists( parsed, "anomalyType" ) ? parsed.anomalyType : "UNKNOWN";
+                        out.notes       = structKeyExists( parsed, "notes" ) ? parsed.notes : "";
+                        out.ok          = true;
+                    }
+                } catch ( any parseEx ) {
+                    out.ok    = false;
+                    out.error = "Fallo de parseo JSON: " & parseEx.message;
+                }
+            }
+        } catch ( any e ) {
+            out.ok         = false;
+            out.error      = e.message;
+            out.durationMs = getTickCount() - t0;
+        }
+
+        return out;
+    }
+
+    /**
+     * Cuestionamiento de diagnostico (Abogado del Diablo / Adversarial Validation).
+     * Evalua si la causa determinista principal tiene puntos ciegos o si el parche propuesto podria fallar.
+     */
+    public struct function challengeDiagnosis( required struct deterministicDiagnosis, required string evidenceContext ) {
+        var t0 = getTickCount();
+        var out = {
+            "used"                : false,
+            "ok"                  : false,
+            "challengeText"       : "",
+            "proposedAlternative" : "",
+            "riskIdentified"      : "",
+            "error"               : "",
+            "durationMs"          : 0,
+            "tokens"              : 0,
+            "budget"              : 0,
+            "model"               : variables.config.getLocalAi().model
+        };
+
+        if ( !isServiceEnabled() ) {
+            out.error = "IA local deshabilitada.";
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "challenge_diagnosis", 1 );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+            out.budget      = tokenBudget;
+
+            var topCause = arrayLen( arguments.deterministicDiagnosis.causes ) > 0 ? arguments.deterministicDiagnosis.causes[ 1 ].code : "NONE";
+            var contextBlob = "Causa determinista diagnosticada: " & topCause & char( 10 ) & "Evidencia contextual: " & arguments.evidenceContext;
+
+            var prompt = variables.sandbox.wrapPrompt(
+                "Eres un auditor critico (Abogado del Diablo) revisando un diagnostico de SRE.",
+                "diagnostic_context",
+                contextBlob,
+                "Cuestiona si la causa raiz diagnosticada podria ser un sintoma de un defecto mas profundo en fallback, "
+                & "o si reparar unicamente esa causa deja desprotegido el calculo de montos o tipos. "
+                & 'Responde en JSON: {"challengeText": "cuestionamiento en 2 lineas", "proposedAlternative": "alternativa o NONE", "riskIdentified": "riesgo residual observado"}'
+            );
+
+            var reply = callOllama( prompt, true, tokenBudget, timeoutSec );
+            out.durationMs = getTickCount() - t0;
+            out.tokens     = structKeyExists( reply, "eval_count" ) ? reply.eval_count : 0;
+            var text       = structKeyExists( reply, "response" ) ? reply.response : "";
+
+            if ( len( trim( text ) ) > 0 ) {
+                try {
+                    var parsed = extractJson( text );
+                    if ( isStruct( parsed ) ) {
+                        out.challengeText       = structKeyExists( parsed, "challengeText" ) ? parsed.challengeText : text;
+                        out.proposedAlternative = structKeyExists( parsed, "proposedAlternative" ) ? parsed.proposedAlternative : "NONE";
+                        out.riskIdentified      = structKeyExists( parsed, "riskIdentified" ) ? parsed.riskIdentified : "";
+                        out.ok                  = true;
+                    }
+                } catch ( any parseEx ) {
+                    out.challengeText = left( text, 300 );
+                    out.ok            = true;
+                }
+            }
+        } catch ( any e ) {
+            out.ok         = false;
+            out.error      = e.message;
+            out.durationMs = getTickCount() - t0;
+        }
+
+        return out;
+    }
+
+    /**
+     * Analisis causal profundo bajo demanda (Deep Investigation) impulsado por DeepSeek-R1-Distill-7B.
+     * Diseñado para razonamiento CoT sobre efectos colaterales y contingencias complejas.
+     */
+    public struct function deepCausalReasoning(
+        required string prompt,
+        string codeSnippet = "",
+        struct subGraph = {}
+    ) {
+        var t0 = getTickCount();
+        var deepModel = variables.config.getDeepReasoningModel();
+        var out = {
+            "used"         : false,
+            "ok"           : false,
+            "rootCause"    : "",
+            "thoughtTrace" : "",
+            "findings"     : [],
+            "rawText"      : "",
+            "error"        : "",
+            "durationMs"   : 0,
+            "tokens"       : 0,
+            "model"        : deepModel
+        };
+
+        if ( !isServiceEnabled() ) {
+            out.error = "IA local deshabilitada o endpoint no disponible. Se mantiene analisis puramente determinista.";
+            return out;
+        }
+
+        out.used = true;
+        try {
+            var tokenBudget = variables.config.calculateDynamicTokenBudget( "challenge_diagnosis", 100 );
+            var timeoutSec  = variables.config.calculateDynamicTimeout( tokenBudget );
+
+            var wrappedPrompt = variables.sandbox.wrapPrompt(
+                "Eres el motor de investigacion causal profunda DeepSeek-R1 de FaultGraph.",
+                "deep_causal_reasoning",
+                arguments.prompt & ( len( arguments.codeSnippet ) ? ( char( 10 ) & "CODIGO: " & arguments.codeSnippet ) : "" ),
+                "Razona paso a paso la cadena de fallo. Emite tu deduccion en formato JSON: "
+                & '{"rootCause": "...", "confidence": 0.95, "unhandledFallback": true, "recommendedActions": ["..."]}'
+            );
+
+            var reply = callOllama( wrappedPrompt, false, tokenBudget, timeoutSec, deepModel );
+            out.durationMs = getTickCount() - t0;
+            out.tokens     = structKeyExists( reply, "eval_count" ) ? reply.eval_count : 0;
+            out.rawText    = structKeyExists( reply, "response" ) ? reply.response : "";
+
+            if ( findNoCase( "<think>", out.rawText ) > 0 && findNoCase( "</think>", out.rawText ) > 0 ) {
+                var thinkStart = findNoCase( "<think>", out.rawText ) + 7;
+                var thinkEnd   = findNoCase( "</think>", out.rawText );
+                out.thoughtTrace = trim( mid( out.rawText, thinkStart, thinkEnd - thinkStart ) );
+            }
+
+            var parsed = extractJson( out.rawText );
+            if ( isStruct( parsed ) ) {
+                out.rootCause = structKeyExists( parsed, "rootCause" ) ? parsed.rootCause : "Causa raiz identificada por R1";
+                out.ok = true;
+            }
+        } catch ( any e ) {
+            out.ok    = false;
+            out.error = "Error en investigacion profunda: " & e.message;
+        }
+
+        return out;
+    }
+
+    // ------------------------------------------------------------------
+    // Transporte privado a Ollama
+    // ------------------------------------------------------------------
+
+    private struct function callOllama(
+        required string prompt,
+        boolean jsonFormat = false,
+        numeric tokenBudget = 0,
+        numeric timeoutSec = 0,
+        string modelOverride = ""
+    ) {
+        var localAi      = variables.config.getLocalAi();
+        var modelToUse   = len( trim( arguments.modelOverride ) ) ? trim( arguments.modelOverride ) : variables.config.getActiveAiModel();
+        var tokensToUse  = arguments.tokenBudget > 0 ? arguments.tokenBudget : localAi.maxTokens;
+        var timeoutToUse = arguments.timeoutSec > 0 ? arguments.timeoutSec : localAi.timeoutSeconds;
+
+        var payload = {
+            "model"   : modelToUse,
+            "prompt"  : arguments.prompt,
+            "stream"  : false,
+            "options" : {
+                "num_predict" : javacast( "int", tokensToUse ),
+                "temperature" : javacast( "double", localAi.temperature )
+            }
+        };
+        if ( arguments.jsonFormat ) {
+            payload[ "format" ] = "json";
+        }
+
+        var response = variables.sandbox.executeOllamaRequest(
+            localAi.endpoint,
+            payload,
+            timeoutToUse
+        );
+
+        if ( response.status != 200 ) {
+            throw( type = "OllamaHttpException", message = "Ollama devolvio codigo HTTP " & response.status & ": " & response.body );
+        }
+
+        return jsonDeserialize( response.body );
+    }
+
+    /**
+     * Extractor robusto y resiliente de JSON para respuestas de LLM.
+     * Despeja markdown codeblocks, preambulos o texto envolvente asegurando calidad maxima.
+     */
+    private any function extractJson( required string text ) {
+        var clean = trim( arguments.text );
+        if ( len( clean ) == 0 ) {
+            return {};
+        }
+
+        // 1. Quitar envoltura de codigo markdown ```json ... ``` si existe
+        if ( left( clean, 3 ) == "```" ) {
+            var firstNl = find( char( 10 ), clean );
+            if ( firstNl > 0 ) {
+                clean = right( clean, len( clean ) - firstNl );
+            }
+            if ( right( clean, 3 ) == "```" ) {
+                clean = left( clean, len( clean ) - 3 );
+            }
+            clean = trim( clean );
+        }
+
+        // 2. Intento directo rapido
+        try {
+            return jsonDeserialize( clean );
+        } catch ( any directEx ) {
+            // 3. Aislar delimitadores estructurales { o [
+            var startCurly = find( "{", clean );
+            var startSquare = find( "[", clean );
+            var startIdx = 0;
+            if ( startCurly > 0 && ( startSquare == 0 || startCurly < startSquare ) ) {
+                startIdx = startCurly;
+            } else if ( startSquare > 0 ) {
+                startIdx = startSquare;
+            }
+
+            var endCurly = 0;
+            var endSquare = 0;
+            for ( var i = len( clean ); i >= 1; i-- ) {
+                var ch = mid( clean, i, 1 );
+                if ( ch == "}" && endCurly == 0 ) endCurly = i;
+                if ( ch == "]" && endSquare == 0 ) endSquare = i;
+                if ( endCurly > 0 || endSquare > 0 ) break;
+            }
+            var endIdx = max( endCurly, endSquare );
+
+            if ( startIdx > 0 && endIdx > startIdx ) {
+                var isolated = mid( clean, startIdx, endIdx - startIdx + 1 );
+                return jsonDeserialize( isolated );
+            }
+            rethrow;
+        }
+    }
+
+    private boolean function isServiceEnabled() {
+        if ( variables.isMocked ) {
+            return true;
+        }
+        return variables.config.isLocalAiEnabled();
+    }
+
+}

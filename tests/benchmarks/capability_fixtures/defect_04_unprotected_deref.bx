@@ -1,0 +1,8 @@
+/**
+ * Known Defect: Blind nested struct dereference (CWE-476)
+ */
+class {
+    function getQueue() {
+        return variables.config.fallback.queueName;
+    }
+}

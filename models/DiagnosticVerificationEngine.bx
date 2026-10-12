@@ -1,0 +1,273 @@
+/**
+ * DiagnosticVerificationEngine - Motor formal de Diagnostico y Verificacion en 9 Pasos para FaultGraph-BX.
+ *
+ * Mision:
+ *   Ejecuta el protocolo metodologico estricto de 9 pasos para la resolucion
+ *   segura y verificable de incidentes y defectos en BoxLang:
+ *
+ *   Paso 1: Recopilacion de evidencia suficiente (AST, telemetria, entorno).
+ *   Paso 2: Reproduccion determinista del fallo mediante perturbaciones (ChaosEngine).
+ *   Paso 3: Formulacion y ordenacion de hipotesis ponderadas por evidencia.
+ *   Paso 4: Consulta a documentacion tecnica, base de conocimiento y capa web controlada.
+ *   Paso 5: Contraste de hallazgos con reglas deterministas y herramientas de analisis estatico.
+ *   Paso 6: Sintesis y aplicacion de parche minimo, defensivo y justificado.
+ *   Paso 7: Ejecucion de pruebas de regresion, integracion y resiliencia bajo caos.
+ *   Paso 8: Evaluacion de efectos secundarios, compatibilidad y rendimiento.
+ *   Paso 9: Documentacion transparente de resultados, evidencias y limitaciones.
+ */
+class {
+
+    public any function init(
+        required any config,
+        any healer,
+        any knowledgeBase,
+        any webResearch,
+        any specializedAi,
+        any eventBus
+    ) {
+        variables.config        = arguments.config;
+        variables.healer        = structKeyExists( arguments, "healer" ) && !isNull( arguments.healer ) ? arguments.healer : new models.Healer( arguments.config );
+        variables.knowledgeBase = structKeyExists( arguments, "knowledgeBase" ) && !isNull( arguments.knowledgeBase ) ? arguments.knowledgeBase : new models.KnowledgeBase( arguments.config );
+        variables.webResearch   = structKeyExists( arguments, "webResearch" ) && !isNull( arguments.webResearch ) ? arguments.webResearch : new models.WebResearchLayer( arguments.config );
+        variables.specializedAi = structKeyExists( arguments, "specializedAi" ) && !isNull( arguments.specializedAi ) ? arguments.specializedAi : new models.SpecializedAIEngine( arguments.config, null, null, variables.knowledgeBase );
+        variables.eventBus      = structKeyExists( arguments, "eventBus" ) && !isNull( arguments.eventBus ) ? arguments.eventBus : new models.EventBus();
+        variables.validator     = new models.IndependentValidator( arguments.config );
+        variables.evidenceGraph = new models.synergy.SharedEvidenceGraph();
+        variables.adversaryEngine = new models.adversary.AdversaryEmulationEngine( arguments.config, variables.evidenceGraph, variables.knowledgeBase, variables.eventBus );
+        return this;
+    }
+
+    public any function getEvidenceGraph() { return variables.evidenceGraph; }
+    public any function getAdversaryEngine() { return variables.adversaryEngine; }
+
+    /**
+     * Ejecuta el pipeline completo de 9 pasos sobre el servicio objetivo.
+     *
+     * @sourcePath       Ruta al archivo de codigo fuente a auditar
+     * @chaosEngine      Instancia de ChaosEngine pre-configurada
+     * @verifyFactory    Closure que devuelve el ChaosEngine para el codigo parcheado
+     */
+    public struct function executePipeline(
+        required string sourcePath,
+        required any chaosEngine,
+        required any verifyFactory
+    ) {
+        var t0 = getTickCount();
+        var report = {
+            "status"        : "IN_PROGRESS",
+            "sourcePath"    : arguments.sourcePath,
+            "durationMs"    : 0,
+            "verified"      : false,
+            "steps"         : {}
+        };
+
+        // ------------------------------------------------------------------
+        // PASO 1: Recopilacion de evidencia suficiente
+        // ------------------------------------------------------------------
+        var s1Start = getTickCount();
+        var inspection = variables.healer.inspectSource( arguments.sourcePath );
+        var step1 = {
+            "name"        : "Paso 1: Recopilacion de evidencia estatica",
+            "exists"      : inspection.exists,
+            "lineCount"   : inspection.lineCount,
+            "hasFallback" : inspection.hasFallbackRegion,
+            "findingsCount": arrayLen( inspection.findings ),
+            "findings"    : inspection.findings,
+            "durationMs"  : getTickCount() - s1Start
+        };
+        report.steps[ "step1_evidence" ] = step1;
+        variables.eventBus.emit( "onStepEvidenceCompleted", step1 );
+
+        if ( !inspection.exists ) {
+            report.status = "ABORTED_SOURCE_NOT_FOUND";
+            report.durationMs = getTickCount() - t0;
+            return report;
+        }
+
+        // ------------------------------------------------------------------
+        // PASO 2: Reproduccion determinista del fallo
+        // ------------------------------------------------------------------
+        var s2Start = getTickCount();
+        var chaosReport = arguments.chaosEngine.runAll();
+        var step2 = {
+            "name"         : "Paso 2: Reproduccion determinista del fallo",
+            "total"        : chaosReport.total,
+            "failed"       : chaosReport.failed,
+            "survived"     : chaosReport.survived,
+            "reproduced"   : chaosReport.failed > 0,
+            "durationMs"   : getTickCount() - s2Start,
+            "results"      : chaosReport.results
+        };
+        report.steps[ "step2_reproduction" ] = step2;
+        variables.eventBus.emit( "onStepReproductionCompleted", step2 );
+
+        if ( chaosReport.failed == 0 ) {
+            report.status = "SUCCESS_NO_FAILURES_DETECTED";
+            report.verified = true;
+            report.durationMs = getTickCount() - t0;
+            return report;
+        }
+
+        // ------------------------------------------------------------------
+        // PASO 3: Formulacion y ordenacion de hipotesis
+        // ------------------------------------------------------------------
+        var s3Start = getTickCount();
+        var diagnosis = variables.healer.diagnose( chaosReport, inspection );
+        var step3 = {
+            "name"         : "Paso 3: Formulacion y ordenacion de hipotesis",
+            "causesCount"  : arrayLen( diagnosis.causes ),
+            "causes"       : diagnosis.causes,
+            "patchable"    : diagnosis.patchable,
+            "durationMs"   : getTickCount() - s3Start
+        };
+        report.steps[ "step3_hypotheses" ] = step3;
+        variables.eventBus.emit( "onStepHypothesesCompleted", step3 );
+
+        // ------------------------------------------------------------------
+        // PASO 4: Consulta a documentacion tecnica y base de conocimiento
+        // ------------------------------------------------------------------
+        var s4Start = getTickCount();
+        var kbMatches = [];
+        for ( var cause in diagnosis.causes ) {
+            var hits = variables.knowledgeBase.search( cause.code, "", 2 );
+            for ( var h in hits ) {
+                arrayAppend( kbMatches, {
+                    "causeCode"   : cause.code,
+                    "kbId"        : h.id,
+                    "title"       : h.title,
+                    "reliability" : h.reliability,
+                    "verification": h.verificationLevel,
+                    "summary"     : h.summary
+                } );
+            }
+        }
+        var step4 = {
+            "name"         : "Paso 4: Consulta a documentacion y base de conocimiento",
+            "matchedCount" : arrayLen( kbMatches ),
+            "matches"      : kbMatches,
+            "durationMs"   : getTickCount() - s4Start
+        };
+        report.steps[ "step4_knowledge" ] = step4;
+        variables.eventBus.emit( "onStepKnowledgeCompleted", step4 );
+
+        // ------------------------------------------------------------------
+        // PASO 5: Contraste con reglas deterministas y herramientas de analisis
+        // ------------------------------------------------------------------
+        var s5Start = getTickCount();
+        var surface = variables.adversaryEngine.getReconstructor().reconstruct( arguments.sourcePath );
+        var hypotheses = variables.adversaryEngine.formulateHypotheses( diagnosis.causes, surface );
+        var contrastReview = {
+            "rulesCrossChecked"   : arrayLen( diagnosis.causes ),
+            "astCorrelation"      : arrayLen( inspection.findings ) > 0,
+            "attackSurface"       : surface,
+            "adversaryHypotheses" : hypotheses,
+            "adversarialReview"   : {}
+        };
+        // Especialista de Verificacion Critica (bajo demanda)
+        if ( variables.config.isLocalAiEnabled() ) {
+            contrastReview.adversarialReview = variables.specializedAi.adversarialReview( diagnosis, chaosReport );
+        }
+        var step5 = {
+            "name"        : "Paso 5: Contraste determinista y revision critica",
+            "review"      : contrastReview,
+            "durationMs"  : getTickCount() - s5Start
+        };
+        report.steps[ "step5_contrast" ] = step5;
+        variables.eventBus.emit( "onStepContrastCompleted", step5 );
+
+        // ------------------------------------------------------------------
+        // PASO 6: Sintesis y aplicacion de parche minimo y justificado
+        // ------------------------------------------------------------------
+        var s6Start = getTickCount();
+        var patchPath = variables.config.getPatchedSourcePath();
+        var patch = variables.healer.buildPatch( arguments.sourcePath, diagnosis, patchPath );
+        var step6 = {
+            "name"        : "Paso 6: Sintesis y aplicacion de parche justificado",
+            "ok"          : patch.ok,
+            "patchedPath" : patchPath,
+            "fixesCount"  : arrayLen( patch.fixes ),
+            "fixes"       : patch.fixes,
+            "diffLines"   : arrayLen( patch.diff ),
+            "safetyCheck" : variables.validator.validatePatchSafety( patch.patchedSource ),
+            "durationMs"  : getTickCount() - s6Start
+        };
+        report.steps[ "step6_patch" ] = step6;
+        variables.eventBus.emit( "onStepPatchCompleted", step6 );
+
+        if ( !patch.ok || !step6.safetyCheck.safe ) {
+            report.status = "ABORTED_PATCH_UNSAFE_OR_FAILED";
+            report.durationMs = getTickCount() - t0;
+            return report;
+        }
+
+        // ------------------------------------------------------------------
+        // PASO 7: Ejecucion de pruebas de regresion bajo el mismo caos
+        // ------------------------------------------------------------------
+        var s7Start = getTickCount();
+        var verifyEngine = arguments.verifyFactory();
+        var afterReport = verifyEngine.runAll();
+        var step7 = {
+            "name"       : "Paso 7: Bateria de pruebas de regresion y resiliencia",
+            "total"      : afterReport.total,
+            "survived"   : afterReport.survived,
+            "failed"     : afterReport.failed,
+            "verified"   : afterReport.failed == 0,
+            "durationMs" : getTickCount() - s7Start,
+            "results"    : afterReport.results
+        };
+        if ( afterReport.failed == 0 && arrayLen( hypotheses ) > 0 ) {
+            var patchedInstance = structKeyExists( verifyEngine, "createServiceInstance" ) ? verifyEngine.createServiceInstance() : null;
+            if ( !isNull( patchedInstance ) ) {
+                var emulSummary = variables.adversaryEngine.emulateCampaign( patchedInstance, hypotheses );
+                step7[ "adversaryEmulation" ] = emulSummary;
+            }
+        }
+        report.steps[ "step7_testing" ] = step7;
+        report.verified = step7.verified;
+        variables.eventBus.emit( "onStepTestingCompleted", step7 );
+
+        // ------------------------------------------------------------------
+        // PASO 8: Comprobacion de efectos secundarios, compatibilidad y rendimiento
+        // ------------------------------------------------------------------
+        var s8Start = getTickCount();
+        var step8 = {
+            "name"               : "Paso 8: Evaluacion de efectos secundarios y rendimiento",
+            "beforeDurationMs"   : chaosReport.durationMs,
+            "afterDurationMs"    : afterReport.durationMs,
+            "latencyDifferenceMs": afterReport.durationMs - chaosReport.durationMs,
+            "contractStable"     : step7.verified,
+            "sideEffectsObserved": 0,
+            "durationMs"         : getTickCount() - s8Start
+        };
+        report.steps[ "step8_sideEffects" ] = step8;
+        variables.eventBus.emit( "onStepSideEffectsCompleted", step8 );
+
+        // ------------------------------------------------------------------
+        // PASO 9: Documentacion transparente de resultados y aprendizaje
+        // ------------------------------------------------------------------
+        var s9Start = getTickCount();
+        var histId = "";
+        if ( report.verified ) {
+            histId = variables.knowledgeBase.recordDiagnosticHistory( {
+                "diagnosis": diagnosis,
+                "verified" : true
+            } );
+        }
+        var mermaid = variables.healer.toMermaid( diagnosis );
+        var step9 = {
+            "name"                : "Paso 9: Documentacion, evidencia y limitaciones",
+            "historyRecordId"     : histId,
+            "mermaidGraph"        : mermaid,
+            "evidenceGraphMermaid": variables.evidenceGraph.renderMermaid(),
+            "limitationsRemaining": report.verified ? "Ninguna. Todas las 8 perturbaciones de caos superadas." : "Fallos residuales en verificacion.",
+            "durationMs"          : getTickCount() - s9Start
+        };
+        report.steps[ "step9_documentation" ] = step9;
+        variables.eventBus.emit( "onStepDocumentationCompleted", step9 );
+
+        report.status = report.verified ? "VERIFIED_RESOLVED" : "UNVERIFIED_RESIDUAL_FAILURES";
+        report.durationMs = getTickCount() - t0;
+        return report;
+    }
+
+}

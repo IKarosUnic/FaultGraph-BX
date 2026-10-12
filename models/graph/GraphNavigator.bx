@@ -1,0 +1,273 @@
+/**
+ * GraphNavigator.bx - Motor de Navegacion Topologica, Zonificacion y Analisis Causal.
+ *
+ * Mision:
+ *   Transforma el grafo de conocimiento estructural en un entorno espacial activo
+ *   y navegable tanto para el sistema determinista como para los agentes de IA locales:
+ *     1. Zonificacion Semantica en 4 capas funcionales (Entradas, Dominio, SPOFs, Fallbacks).
+ *     2. Pathfinding Topologico (BFS): ruta exacta entre el punto de entrada y el fallo.
+ *     3. Calculo de Radio de Explosion (Blast Radius): proyeccion del impacto aguas abajo.
+ *     4. Trazabilidad Causal Inversa (Upstream Trace): busqueda del origen de datos corruptos.
+ *     5. Deteccion de SPOFs (Puntos Unicos de Fallo sin red de contingencia).
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    property name="graph"  type="any";
+    property name="config" type="any";
+
+    public any function init( any graph = null, any config = null ) {
+        variables.config = structKeyExists( arguments, "config" ) && !isNull( arguments.config ) ? arguments.config : new config.Config( getCurrentTemplatePath() );
+        variables.graph  = structKeyExists( arguments, "graph" ) && !isNull( arguments.graph ) ? arguments.graph : new models.graph.StructuralKnowledgeGraph( variables.config );
+        variables.zones  = {
+            "ZONE_0_ENTRY"        : {},
+            "ZONE_1_DOMAIN"       : {},
+            "ZONE_2_SPOF_EXTERNAL": {},
+            "ZONE_3_RESILIENCE"   : {}
+        };
+        classifyZones();
+        return this;
+    }
+
+    public any function getGraph() {
+        return variables.graph;
+    }
+
+    /**
+     * Clasifica y particiona todos los nodos del grafo en 4 zonas funcionales.
+     */
+    public struct function classifyZones() {
+        var allNodes = variables.graph.getNodes();
+        variables.zones = {
+            "ZONE_0_ENTRY"        : {},
+            "ZONE_1_DOMAIN"       : {},
+            "ZONE_2_SPOF_EXTERNAL": {},
+            "ZONE_3_RESILIENCE"   : {}
+        };
+
+        for ( var nId in allNodes ) {
+            var n = allNodes[ nId ];
+            var t = uCase( n.type );
+            var l = lCase( n.label & " " & nId );
+
+            var assignedZone = "ZONE_1_DOMAIN";
+
+            if ( t == "ENDPOINT" || t == "CLI" || t == "SCRIPT" || find( "entry", l ) || find( "charge", l ) || find( "controller", l ) || find( "route", l ) ) {
+                assignedZone = "ZONE_0_ENTRY";
+            } else if ( t == "GATEWAY" || t == "EXTERNAL" || find( "gateway", l ) || find( "remote", l ) || find( "http", l ) || find( "api_client", l ) ) {
+                assignedZone = "ZONE_2_SPOF_EXTERNAL";
+            } else if ( t == "FALLBACK" || t == "QUEUE" || find( "fallback", l ) || find( "offline", l ) || find( "contingency", l ) || find( "catch", l ) ) {
+                assignedZone = "ZONE_3_RESILIENCE";
+            }
+
+            n[ "zone" ] = assignedZone;
+            variables.zones[ assignedZone ][ nId ] = n;
+        }
+
+        return {
+            "zone0Count": structCount( variables.zones.ZONE_0_ENTRY ),
+            "zone1Count": structCount( variables.zones.ZONE_1_DOMAIN ),
+            "zone2Count": structCount( variables.zones.ZONE_2_SPOF_EXTERNAL ),
+            "zone3Count": structCount( variables.zones.ZONE_3_RESILIENCE ),
+            "totalNodes": structCount( allNodes )
+        };
+    }
+
+    public struct function getZonesSummary() {
+        return {
+            "ZONE_0_ENTRY"        : structCount( variables.zones.ZONE_0_ENTRY ),
+            "ZONE_1_DOMAIN"       : structCount( variables.zones.ZONE_1_DOMAIN ),
+            "ZONE_2_SPOF_EXTERNAL": structCount( variables.zones.ZONE_2_SPOF_EXTERNAL ),
+            "ZONE_3_RESILIENCE"   : structCount( variables.zones.ZONE_3_RESILIENCE )
+        };
+    }
+
+    public array function getNodesInZone( required string zoneName ) {
+        var targetZone = uCase( trim( arguments.zoneName ) );
+        var result = [];
+        if ( structKeyExists( variables.zones, targetZone ) ) {
+            for ( var k in variables.zones[ targetZone ] ) {
+                arrayAppend( result, variables.zones[ targetZone ][ k ] );
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Encuentra la ruta mas corta (pathfinding BFS) entre dos nodos del grafo.
+     */
+    public struct function findShortestPath( required string sourceId, required string targetId ) {
+        var s = trim( arguments.sourceId );
+        var t = trim( arguments.targetId );
+
+        if ( s == t ) {
+            return { "found": true, "hops": 0, "path": [ s ], "edges": [] };
+        }
+
+        var queue = [ { "id": s, "path": [ s ], "edges": [] } ];
+        var visited = { "#s#": true };
+
+        while ( arrayLen( queue ) > 0 ) {
+            var current = queue[ 1 ];
+            arrayDeleteAt( queue, 1 );
+
+            var neighbors = variables.graph.getNeighbors( current.id, "OUT" );
+            for ( var nb in neighbors ) {
+                var nextId = nb.nodeId;
+                if ( !structKeyExists( visited, nextId ) ) {
+                    visited[ nextId ] = true;
+                    var newPath = duplicate( current.path );
+                    arrayAppend( newPath, nextId );
+                    var newEdges = duplicate( current.edges );
+                    arrayAppend( newEdges, nb.edge );
+
+                    if ( nextId == t ) {
+                        return {
+                            "found": true,
+                            "hops" : arrayLen( newPath ) - 1,
+                            "path" : newPath,
+                            "edges": newEdges
+                        };
+                    }
+
+                    arrayAppend( queue, { "id": nextId, "path": newPath, "edges": newEdges } );
+                }
+            }
+        }
+
+        return { "found": false, "hops": -1, "path": [], "edges": [] };
+    }
+
+    /**
+     * Calcula el Radio de Explosion (Blast Radius) aguas abajo ante el fallo o modificacion de un nodo.
+     */
+    public struct function calculateBlastRadius( required string nodeId, numeric maxHops = 3 ) {
+        var rootId = trim( arguments.nodeId );
+        var affectedNodes = {};
+        var frontier = [ { "id": rootId, "hop": 0 } ];
+        var visited = { "#rootId#": true };
+
+        while ( arrayLen( frontier ) > 0 ) {
+            var curr = frontier[ 1 ];
+            arrayDeleteAt( frontier, 1 );
+
+            if ( curr.hop >= arguments.maxHops ) {
+                continue;
+            }
+
+            var neighbors = variables.graph.getNeighbors( curr.id, "OUT" );
+            for ( var nb in neighbors ) {
+                var nid = nb.nodeId;
+                if ( !structKeyExists( visited, nid ) ) {
+                    visited[ nid ] = true;
+                    var nodeData = variables.graph.getNode( nid );
+                    affectedNodes[ nid ] = {
+                        "id"       : nid,
+                        "label"    : structKeyExists( nodeData, "label" ) ? nodeData.label : nid,
+                        "zone"     : structKeyExists( nodeData, "zone" ) ? nodeData.zone : "ZONE_1_DOMAIN",
+                        "distance" : curr.hop + 1,
+                        "viaEdge"  : nb.edge.relationType
+                    };
+                    arrayAppend( frontier, { "id": nid, "hop": curr.hop + 1 } );
+                }
+            }
+        }
+
+        var count = structCount( affectedNodes );
+        var riskLevel = "LOW";
+        if ( count >= 5 )      { riskLevel = "CRITICAL"; }
+        else if ( count >= 3 ) { riskLevel = "HIGH"; }
+        else if ( count >= 1 ) { riskLevel = "MEDIUM"; }
+
+        var listAffected = [];
+        for ( var k in affectedNodes ) {
+            arrayAppend( listAffected, affectedNodes[ k ] );
+        }
+
+        return {
+            "rootNode"      : rootId,
+            "maxHops"       : arguments.maxHops,
+            "totalAffected" : count,
+            "riskLevel"     : riskLevel,
+            "affectedNodes" : listAffected
+        };
+    }
+
+    /**
+     * Trazabilidad inversa hacia el origen (Upstream Origin Trace).
+     * Identifica que puntos de entrada o datos alimentaron al nodo que colapso.
+     */
+    public struct function traceUpstreamOrigin( required string failureNodeId ) {
+        var startId = trim( arguments.failureNodeId );
+        var upstreamPath = [ startId ];
+        var visited = { "#startId#": true };
+        var current = startId;
+
+        while ( true ) {
+            var incoming = variables.graph.getNeighbors( current, "IN" );
+            if ( arrayLen( incoming ) == 0 ) {
+                break;
+            }
+
+            var nextNode = "";
+            for ( var inc in incoming ) {
+                var candId = inc.nodeId;
+                if ( !structKeyExists( visited, candId ) ) {
+                    nextNode = candId;
+                    break;
+                }
+            }
+
+            if ( len( nextNode ) == 0 ) {
+                break;
+            }
+
+            visited[ nextNode ] = true;
+            arrayAppend( upstreamPath, nextNode );
+            current = nextNode;
+        }
+
+        var entryPoint = arrayLen( upstreamPath ) > 1 ? upstreamPath[ arrayLen( upstreamPath ) ] : startId;
+
+        return {
+            "failureNode"   : startId,
+            "rootEntryPoint": entryPoint,
+            "chainLength"   : arrayLen( upstreamPath ),
+            "upstreamChain" : upstreamPath
+        };
+    }
+
+    /**
+     * Detecta Puntos Unicos de Fallo (SPOFs) no protegidos por una red de contingencia en Zona 3.
+     */
+    public array function findUnshieldedSPOFs() {
+        var spofs = [];
+        var externalNodes = getNodesInZone( "ZONE_2_SPOF_EXTERNAL" );
+
+        for ( var ext in externalNodes ) {
+            var hasFallback = false;
+            var outNbs = variables.graph.getNeighbors( ext.id, "OUT" );
+            for ( var nb in outNbs ) {
+                var nbNode = variables.graph.getNode( nb.nodeId );
+                if ( structKeyExists( nbNode, "zone" ) && nbNode.zone == "ZONE_3_RESILIENCE" ) {
+                    hasFallback = true;
+                    break;
+                }
+            }
+
+            if ( !hasFallback ) {
+                arrayAppend( spofs, {
+                    "nodeId"    : ext.id,
+                    "label"     : ext.label,
+                    "zone"      : ext.zone,
+                    "shielded"  : false,
+                    "risk"      : "Punto de dependencia externa sin ruta de contingencia directa en Zona 3"
+                } );
+            }
+        }
+
+        return spofs;
+    }
+
+}

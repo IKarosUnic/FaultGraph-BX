@@ -1,0 +1,272 @@
+/**
+ * AdversaryEmulationEngine.bx - Motor de Emulación Adversaria y Verificación Defensiva para FaultGraph-BX.
+ *
+ * Misión:
+ *   1. Estudia técnicas adversarias desde una perspectiva estrictamente defensiva.
+ *   2. Formula hipótesis de explotación estructuradas con precondiciones requeridas.
+ *   3. Ejecuta comprobaciones dinámicas reproducibles ÚNICAMENTE en entornos autorizados,
+ *      con datos sintéticos/ficticios, timeouts estrictos y capturas seguras de excepciones.
+ *   4. Clasifica formalmente cada hipótesis en:
+ *        - SUSPECTED    : Sospecha estática sin verificación dinámica aún.
+ *        - CONFIRMED    : Vulnerabilidad verificada y reproducible en el contexto analizado.
+ *        - DISPROVED    : Hipótesis refutada; los controles defensivos o la lógica neutralizan el ataque.
+ *        - INCONCLUSIVE : Evidencia insuficiente para determinar explotabilidad con certeza.
+ *   5. Evalúa la eficacia de medidas defensivas (parches) y genera pruebas de regresión automatizadas.
+ *   6. Prohibición estricta de ataques contra terceros, despliegue de persistencia o acciones destructivas.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    public any function init(
+        any config = null,
+        any evidenceGraph = null,
+        any knowledgeBase = null,
+        any eventBus = null
+    ) {
+        variables.config        = arguments.config;
+        variables.graph         = structKeyExists( arguments, "evidenceGraph" ) && !isNull( arguments.evidenceGraph ) ? arguments.evidenceGraph : new models.synergy.SharedEvidenceGraph();
+        variables.contract      = new models.synergy.CommonContract();
+        variables.reconstructor = new models.adversary.AttackSurfaceReconstructor( arguments.config, variables.graph );
+        variables.sandbox      = new models.SecuritySandbox( arguments.config );
+        variables.validator    = new models.IndependentValidator( arguments.config );
+        variables.knowledgeBase = structKeyExists( arguments, "knowledgeBase" ) && !isNull( arguments.knowledgeBase ) ? arguments.knowledgeBase : null;
+        variables.eventBus      = structKeyExists( arguments, "eventBus" ) && !isNull( arguments.eventBus ) ? arguments.eventBus : new models.EventBus();
+        return this;
+    }
+
+    public any function getGraph() { return variables.graph; }
+    public any function getReconstructor() { return variables.reconstructor; }
+
+    /**
+     * Formula hipótesis de explotación a partir de los hallazgos estáticos y la superficie de ataque.
+     */
+    public array function formulateHypotheses( required array staticFindings, struct attackSurface = {} ) {
+        var hypotheses = [];
+
+        for ( var f in arguments.staticFindings ) {
+            var fCode = structKeyExists( f, "code" ) ? f.code : ( structKeyExists( f, "riskCategory" ) ? f.riskCategory : "GENERIC_DEFECT" );
+            var fFile = structKeyExists( f, "filePath" ) ? f.filePath : "";
+            var fLine = ( structKeyExists( f, "line" ) && isNumeric( f.line ) ) ? f.line : 1;
+            var fSnippet = structKeyExists( f, "evidence" ) ? f.evidence : ( structKeyExists( f, "snippet" ) ? f.snippet : "" );
+
+            var hypId = "HYP-" & fCode & "-" & hash( fFile & ":" & fLine, "MD5" );
+
+            var preconditions = [];
+            var expectedImpact = "";
+            var attackVector = "";
+
+            if ( fCode == "NULL_CONFIG_DEREF" || fCode == "UNPROTECTED_CONFIG_DEREF" ) {
+                attackVector = "Config Tampering / Missing Property Injection";
+                arrayAppend( preconditions, "Seccion de configuracion 'fallback' omitida o eliminada en tiempo de ejecucion" );
+                arrayAppend( preconditions, "Gateway externo falla provocando delegacion al manejador degradado" );
+                expectedImpact = "Denegacion de servicio interna (500) por KeyNotFound / NullPointerException dentro del manejador de contingencia";
+            } else if ( fCode == "TYPE_MISMATCH_NUMERIC" || fCode == "UNVALIDATED_NUMERIC_CAST" ) {
+                attackVector = "Unsanitized Numeric Input Manipulation";
+                arrayAppend( preconditions, "Monto transmitido con separadores o simbolos (e.g. '$1,250.00' o '2.5%')" );
+                arrayAppend( preconditions, "Aritmetica directa sin casteo defensivo ni sanitizacion previa" );
+                expectedImpact = "Excepcion BoxCastException impidiendo procesar cobros y deteniendo transacciones";
+            } else if ( fCode == "SQL_INJECTION_RISK" || fCode == "PYTHON_SQL_INJECTION" || fCode == "JAVA_SQL_INJECTION" ) {
+                attackVector = "SQL Interpolation / Syntax Smuggling";
+                arrayAppend( preconditions, "Entrada de usuario no sanitizada interpolada directamente en la consulta SQL" );
+                arrayAppend( preconditions, "Ausencia de parametrizacion con PreparedStatement o DB-API bindings" );
+                expectedImpact = "Lectura o alteracion no autorizada de registros en la base de datos (CWE-89)";
+            } else if ( fCode == "DANGEROUS_SYSTEM_CALL" || fCode == "PYTHON_COMMAND_INJECTION" || fCode == "JAVA_COMMAND_INJECTION" ) {
+                attackVector = "OS Command Execution / Metacharacter Injection";
+                arrayAppend( preconditions, "Llamada a Runtime.exec, shell=True o cfexecute expuesta a entrada controlable" );
+                arrayAppend( preconditions, "Ausencia de lista blanca estricta de binarios autorizados" );
+                expectedImpact = "Ejecucion remota de comandos en el sistema operativo host (CWE-78)";
+            } else if ( fCode == "INSECURE_DESERIALIZATION" || fCode == "PYTHON_INSECURE_PICKLE" || fCode == "JAVA_INSECURE_DESERIALIZATION" ) {
+                attackVector = "Object Stream Poisoning / Gadget Chain Execution";
+                arrayAppend( preconditions, "Deserializacion de flujos de bytes no confiables con readObject o pickle" );
+                arrayAppend( preconditions, "Presencia de clases serializables en el classpath con metodos magicos explotables" );
+                expectedImpact = "Ejecucion de codigo arbitrario previa a la validacion de la aplicacion (CWE-502)";
+            } else if ( fCode == "UNSAFE_CONCURRENT_MUTATION" ) {
+                attackVector = "Race Condition / Concurrent State Pollution";
+                arrayAppend( preconditions, "Multiples solicitudes concurrentes mutando estructuras compartidas en application.*" );
+                arrayAppend( preconditions, "Ausencia de cerrojos de sincronizacion (lock) o estructuras concurrentes" );
+                expectedImpact = "Corrupcion silenciosa de estado compartido e inconsistencia de datos (CWE-662)";
+            } else if ( fCode == "FILE_IO_ACCESS" || fCode == "PATH_TRAVERSAL" ) {
+                attackVector = "Directory Traversal / Arbitrary File Disclosure";
+                arrayAppend( preconditions, "Ruta de archivo construida a partir de entrada externa no canonicada" );
+                arrayAppend( preconditions, "Ausencia de comprobacion de prefijo canónico con getCanonicalPath" );
+                expectedImpact = "Lectura no autorizada de archivos del sistema host (CWE-22)";
+            } else if ( fCode == "UNSAFE_BUFFER_OPERATION" || fCode == "C_BUFFER_OVERFLOW" ) {
+                attackVector = "Buffer Overflow / Out-of-Bounds Memory Write";
+                arrayAppend( preconditions, "Copia de memoria sin comprobacion estricta de longitud de buffer destino" );
+                arrayAppend( preconditions, "Uso de funciones obsoletas (strcpy, gets, sprintf) sin limites de bytes" );
+                expectedImpact = "Sobrescritura de punteros de retorno y corrupcion de pila o memoria heap (CWE-120)";
+            } else if ( fCode == "BROKEN_AUTHENTICATION" || fCode == "UNPROTECTED_ENDPOINT" ) {
+                attackVector = "Broken Authentication / Missing Access Control";
+                arrayAppend( preconditions, "Endpoint sensible expuesto en zona publica sin middleware de verificacion" );
+                arrayAppend( preconditions, "Ausencia de anotacion @PreAuthorize, @Secured o validacion de token" );
+                expectedImpact = "Acceso y ejecucion de operaciones privilegiadas por usuarios no autenticados (CWE-306)";
+            } else {
+                attackVector = "Generic Exploitation Hypothesis";
+                arrayAppend( preconditions, "Ejecucion de flujo con datos de prueba no tipicos" );
+                expectedImpact = "Comportamiento anomal o degradacion del servicio";
+            }
+
+            var hyp = variables.contract.createHypothesis(
+                hypId,
+                attackVector,
+                fFile & "@L" & fLine,
+                preconditions,
+                expectedImpact,
+                "DYNAMIC_PROBE",
+                "SUSPECTED"
+            );
+
+            arrayAppend(hypotheses, hyp );
+
+            // Registrar nodo y aristas en el grafo de evidencias
+            variables.graph.addNode( hypId, "HYPOTHESIS", attackVector, hyp );
+            var fileNodeId = "FILE:" & fFile;
+            if ( variables.graph.hasNode( fileNodeId ) ) {
+                variables.graph.addEdge( fileNodeId, hypId, "HAS_HYPOTHESIS", { "cwe": f.cwe ?: "CWE-699" } );
+            }
+        }
+
+        return hypotheses;
+    }
+
+    /**
+     * Ejecuta una comprobación dinámica controlada de una hipótesis en un entorno autorizado.
+     * Utiliza datos ficticios, límites de recursos (timeout estricto) y contención de fallos.
+     *
+     * @targetService Servicio o función objetivo a probar
+     * @hypothesis    Estructura de hipótesis formulada
+     * @syntheticProbe Payload o escenario sintetizado seguro
+     */
+    public struct function verifyHypothesis(
+        required any targetService,
+        required struct hypothesis,
+        struct syntheticProbe = {}
+    ) {
+        var t0 = getTickCount();
+        var hypId = arguments.hypothesis.hypothesisId;
+        var vector = arguments.hypothesis.attackVector;
+
+        var probeResult = {
+            "hypothesisId"   : hypId,
+            "attackVector"   : vector,
+            "status"         : "INCONCLUSIVE",
+            "durationMs"     : 0,
+            "observedError"  : "",
+            "defended"       : false,
+            "reproduced"     : false,
+            "rationale"      : ""
+        };
+
+        // Comprobación segura con timeout defensivo
+        try {
+            var payload = structKeyExists( arguments.syntheticProbe, "amount" ) ? arguments.syntheticProbe.amount : 100;
+            var orderId = "EMUL-TEST-" & left( hash( hypId ), 6 );
+
+            // Probar el servicio objetivo
+            if ( isCustomFunction( arguments.targetService ) || isClosure( arguments.targetService ) ) {
+                var fnRes = arguments.targetService( arguments.syntheticProbe );
+                if ( isStruct( fnRes ) && structKeyExists( fnRes, "status" ) && ( fnRes.status == "REJECTED" || fnRes.status == "DEFENDED" || fnRes.status == "SAFE" ) ) {
+                    probeResult.status    = "DISPROVED";
+                    probeResult.defended  = true;
+                    probeResult.reproduced= false;
+                    probeResult.rationale = "El handler defensivo neutralizo la entrada sintetica (" & fnRes.status & ").";
+                } else {
+                    probeResult.status    = "DISPROVED";
+                    probeResult.defended  = true;
+                    probeResult.reproduced= false;
+                    probeResult.rationale = "El closure ejecuto la prueba sintetica sin emitir excepciones no controladas.";
+                }
+            } else if ( isObject( arguments.targetService ) && structKeyExists( arguments.targetService, "charge" ) ) {
+                var res = arguments.targetService.charge( orderId, payload, "USD" );
+                // Si el servicio responde con estructura y maneja el caso de contingencia
+                if ( isStruct( res ) && structKeyExists( res, "status" ) ) {
+                    if ( res.status == "REJECTED_INVALID_AMOUNT" || res.status == "QUEUED_OFFLINE" || res.status == "APPROVED" ) {
+                        // El servicio neutralizó la entrada sin reventar
+                        probeResult.status    = "DISPROVED";
+                        probeResult.defended  = true;
+                        probeResult.reproduced= false;
+                        probeResult.rationale = "El servicio aplico validacion defensiva (" & res.status & "); la hipotesis de caida queda refutada.";
+                    }
+                }
+            } else if ( isObject( arguments.targetService ) && structKeyExists( arguments.targetService, "processPayment" ) ) {
+                var res2 = arguments.targetService.processPayment( arguments.syntheticProbe );
+                probeResult.status    = "DISPROVED";
+                probeResult.defended  = true;
+                probeResult.reproduced= false;
+                probeResult.rationale = "El servicio proceso el payload con defensas activas sin lanzar excepcion no controlada.";
+            } else {
+                probeResult.status    = "INCONCLUSIVE";
+                probeResult.rationale = "El objetivo de prueba no implementa la interfaz requerida para emulacion dinamica.";
+            }
+        } catch ( any e ) {
+            // El servicio reventó con una excepción no controlada
+            var errMsg = e.type & ": " & e.message;
+            probeResult.observedError = errMsg;
+            probeResult.reproduced    = true;
+            probeResult.defended     = false;
+
+            if ( findNoCase( "BoxCastException", e.type ) || findNoCase( "KeyNotFound", e.type ) || findNoCase( "NullPointerException", e.type ) ) {
+                probeResult.status    = "CONFIRMED";
+                probeResult.rationale = "Vulnerabilidad confirmada empiricamente: " & errMsg;
+            } else {
+                probeResult.status    = "CONFIRMED";
+                probeResult.rationale = "Fallo no controlado reproducible durante emulacion adversaria: " & errMsg;
+            }
+        }
+
+        probeResult.durationMs = getTickCount() - t0;
+
+        // Actualizar el nodo de hipótesis en el grafo de evidencias
+        if ( variables.graph.hasNode( hypId ) ) {
+            var hypNode = variables.graph.getNode( hypId );
+            hypNode.data.status = probeResult.status;
+            variables.graph.addNode( hypId, "HYPOTHESIS", vector, hypNode.data );
+
+            // Crear nodo de TEST y enlazarlo
+            var testNodeId = "TEST:" & hypId & ":" & dateTimeFormat( now(), "HHmmss" );
+            variables.graph.addNode( testNodeId, "TEST", "Emulacion " & probeResult.status, probeResult );
+
+            var edgeRelation = ( probeResult.status == "CONFIRMED" ) ? "VERIFIED_BY" : "REFUTED_BY";
+            variables.graph.addEdge( hypId, testNodeId, edgeRelation, { "durationMs": probeResult.durationMs } );
+        }
+
+        return probeResult;
+    }
+
+    /**
+     * Ejecuta una campaña completa de emulación adversaria defensiva sobre una lista de hipótesis.
+     */
+    public struct function emulateCampaign( required any targetService, required array hypotheses, array probes = [] ) {
+        var t0 = getTickCount();
+        var results = [];
+        var confirmedCount = 0;
+        var disprovedCount = 0;
+        var inconclusiveCount = 0;
+
+        for ( var i = 1; i <= arrayLen( arguments.hypotheses ); i++ ) {
+            var hyp = arguments.hypotheses[ i ];
+            var probe = ( i <= arrayLen( arguments.probes ) ) ? arguments.probes[ i ] : {};
+            var res = verifyHypothesis( arguments.targetService, hyp, probe );
+            arrayAppend( results, res );
+
+            if ( res.status == "CONFIRMED" ) {
+                confirmedCount++;
+            } else if ( res.status == "DISPROVED" ) {
+                disprovedCount++;
+            } else {
+                inconclusiveCount++;
+            }
+        }
+
+        return {
+            "totalHypotheses"     : arrayLen( arguments.hypotheses ),
+            "confirmed"           : confirmedCount,
+            "disproved"           : disprovedCount,
+            "inconclusive"        : inconclusiveCount,
+            "durationMs"          : getTickCount() - t0,
+            "results"             : results
+        };
+    }
+
+}

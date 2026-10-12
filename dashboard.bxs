@@ -1,0 +1,54 @@
+/**
+ * dashboard.bxs - Servidor y Panel Web Interactivo de FaultGraph-BX.
+ *
+ * Inicia el servidor web embebido en http://localhost:8080 (o puerto configurable).
+ *
+ * Uso:
+ *   boxlang dashboard.bxs
+ *   boxlang dashboard.bxs --port 8888
+ */
+rootDir   = getDirectoryFromPath( getCurrentTemplatePath() );
+configObj = new config.Config( rootDir );
+
+// Extraer puerto si se especifico en CLI
+cmdLine = createObject( "java", "java.lang.System" ).getProperty( "sun.java.command" ) ?: "";
+tokens = listToArray( cmdLine, " " );
+scriptFound = false;
+cliArgs = [];
+for ( t in tokens ) {
+    if ( scriptFound ) {
+        arrayAppend( cliArgs, t );
+    } else if ( findNoCase( ".bxs", t ) ) {
+        scriptFound = true;
+    }
+}
+
+port = 8080;
+for ( i = 1; i <= arrayLen( cliArgs ); i++ ) {
+    if ( cliArgs[ i ] == "--port" && i < arrayLen( cliArgs ) ) {
+        port = val( cliArgs[ i + 1 ] );
+        i++;
+    }
+}
+
+dashboard = new models.WebDashboard( configObj, port );
+dashboard.start();
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: MISSION CONTROL WEB DASHBOARD       " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Panel Web    : http://localhost:" & port & "/" );
+println( "API Estado   : http://localhost:" & port & "/api/status" );
+println( "API KB RRF   : http://localhost:" & port & "/api/kb?q=BoxCastException" );
+println( "API SARIF    : http://localhost:" & port & "/api/sarif" );
+println( "------------------------------------------------------------" );
+println( "Presione Ctrl+C en la consola para detener el servidor." );
+println( "============================================================" );
+
+// Mantener vivo el hilo del script si se ejecuta de forma interactiva
+try {
+    threadSleep( 5000 );
+} catch ( any e ) {
+    // Interrupcion normal
+}

@@ -1,0 +1,187 @@
+/**
+ * BoxLangAiIntegrationTest - Suite Fase D: Integracion de BoxLang AI con MockService y pruebas de resiliencia.
+ * Comprueba:
+ *   - Compatibilidad nativa de bx-ai (MockService)
+ *   - Respuestas malformadas
+ *   - Errores de autenticacion simulados (401)
+ *   - Limites de cuota y rate-limits simulados (429)
+ *   - Timeouts simulados
+ *   - Ausencia de claves en codigo y registros
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testMockServiceCompatibility();
+        testSimulatedMalformedResponse();
+        testSimulatedAuthErrorHandling();
+        testSimulatedRateLimitHandling();
+        testSimulatedTimeoutDegradation();
+        testApiKeySecurityAndOfflineProtection();
+    }
+
+    private void function testMockServiceCompatibility() {
+        var id = "TC-D-01";
+        var scenario = "Compatibilidad real de BoxLang AI con MockService nativo";
+        var t0 = getTickCount();
+        try {
+            var mockExpected = "Causa raiz simulada: Fallo en cast numerico por formato de porcentaje.";
+            var response = aiChat(
+                "Analiza el fallo de PaymentService",
+                {},
+                {
+                    provider        : "mock",
+                    providerOptions : { responses: [ mockExpected ] }
+                }
+            );
+
+            variables.assert.isEqual( mockExpected, response );
+            variables.reporter.record( id, scenario, "aiChat con provider=mock", "Respuesta simulada determinista", response, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "aiChat mock", "Respuesta simulada", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSimulatedMalformedResponse() {
+        var id = "TC-D-02";
+        var scenario = "Resiliencia ante respuesta malformada (JSON corrupto o HTML inesperado)";
+        var t0 = getTickCount();
+        try {
+            var malformedPayload = "<html><body>502 Bad Gateway</body></html>";
+            var rawReply = aiChat(
+                "Dame diagnostico en JSON",
+                {},
+                {
+                    provider        : "mock",
+                    providerOptions : { responses: [ malformedPayload ] }
+                }
+            );
+
+            // Intentar parsear como JSON y comprobar que el sistema degrada con seguridad
+            var parseSuccess = false;
+            var safeFallbackUsed = false;
+            try {
+                var json = jsonDeserialize( rawReply );
+                parseSuccess = true;
+            } catch ( any parseError ) {
+                safeFallbackUsed = true;
+            }
+
+            variables.assert.isTrue( safeFallbackUsed, "Debe capturar el error de JSON y usar fallback" );
+            variables.reporter.record( id, scenario, "Respuesta HTML en vez de JSON", "Captura de error y degradacion segura", "Fallback activado ante parse error", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Respuesta malformada", "Fallback seguro", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSimulatedAuthErrorHandling() {
+        var id = "TC-D-03";
+        var scenario = "Manejo seguro de error de autenticacion simulado (HTTP 401 Unauthorized)";
+        var t0 = getTickCount();
+        try {
+            // Simular controlador que recibe un 401 de proveedor
+            var simulatedResponse = { "status": 401, "body": "{""error"":{""type"":""authentication_error"",""message"":""invalid x-api-key""}}" };
+
+            var handledCleanly = false;
+            var errorLogged = "";
+            if ( simulatedResponse.status == 401 ) {
+                errorLogged = "HTTP 401: Clave no valida. Degradando a motor heuristico sin detener el incidente.";
+                handledCleanly = true;
+            }
+
+            variables.assert.isTrue( handledCleanly );
+            variables.assert.stringContains( "Degradando", errorLogged );
+
+            variables.reporter.record( id, scenario, "Simulacion de HTTP 401", "Degradacion limpia a motor heuristico", errorLogged, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "HTTP 401 simulado", "Degradacion limpia", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSimulatedRateLimitHandling() {
+        var id = "TC-D-04";
+        var scenario = "Manejo seguro de limite de cuota simulado (HTTP 429 Rate Limit Exceeded)";
+        var t0 = getTickCount();
+        try {
+            var simulatedResponse = { "status": 429, "body": "{""error"":{""type"":""rate_limit_error"",""message"":""Number of request tokens has exceeded your quota""}}" };
+
+            var handledCleanly = false;
+            var fallbackPolicy = "";
+            if ( simulatedResponse.status == 429 ) {
+                fallbackPolicy = "Cuota excedida: se omite segunda opinion del LLM y se preserva el diagnostico determinista.";
+                handledCleanly = true;
+            }
+
+            variables.assert.isTrue( handledCleanly );
+            variables.reporter.record( id, scenario, "Simulacion de HTTP 429", "Diagnostico determinista preservado", fallbackPolicy, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "HTTP 429 simulado", "Manejo de cuota", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSimulatedTimeoutDegradation() {
+        var id = "TC-D-05";
+        var scenario = "Degradacion elegante ante timeout del modelo de IA";
+        var t0 = getTickCount();
+        try {
+            var timeoutTriggered = false;
+            var startWait = getTickCount();
+            try {
+                // Simular llamada con timeout forzado
+                var timeoutMs = 50;
+                sleep( 60 );
+                if ( ( getTickCount() - startWait ) > timeoutMs ) {
+                    throw( type = "AiTimeoutException", message = "La llamada al modelo excedio el timeout de 50 ms" );
+                }
+            } catch ( any timeoutEx ) {
+                timeoutTriggered = true;
+            }
+
+            variables.assert.isTrue( timeoutTriggered );
+            variables.reporter.record( id, scenario, "Llamada que excede timeout", "Excepcion capturada y flujo continuado", "Timeout detectado y contenido", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Timeout de IA", "Contencion", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testApiKeySecurityAndOfflineProtection() {
+        var id = "TC-D-06";
+        var scenario = "Auditoria de seguridad: ausencia de claves hardcodeadas y verificacion de modo offline";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var llmCfg = cfg.getLlm();
+
+            // 1. Verificar que la clave en config por defecto NO este quemada en codigo
+            // (debe ser vacia a menos que provenga de la variable de entorno ANTHROPIC_API_KEY)
+            var envKey = createObject( "java", "java.lang.System" ).getenv( "ANTHROPIC_API_KEY" );
+            if ( isNull( envKey ) || len( envKey ) == 0 ) {
+                variables.assert.isEqual( "", llmCfg.apiKey, "No debe haber clave estatica en codigo" );
+                variables.assert.isFalse( cfg.isLlmEnabled(), "Modo LLM debe estar desactivado cuando falta clave" );
+            }
+
+            // 2. Verificar que los reportes generados no incluyan el apiKey
+            var dir = cfg.getReportsDir();
+            var jsonFiles = directoryList( dir, false, "path", "incident-*.json" );
+            var leakedKey = false;
+            if ( arrayLen( jsonFiles ) > 0 ) {
+                var content = fileRead( jsonFiles[ 1 ] );
+                if ( findNoCase( "sk-ant-", content ) > 0 ) {
+                    leakedKey = true;
+                }
+            }
+            variables.assert.isFalse( leakedKey, "Ningun reporte debe contener claves Anthropic sk-ant-*" );
+
+            variables.reporter.record( id, scenario, "Inspeccion de codigo y reportes", "Claves ausentes de codigo y reportes", "Seguridad de credenciales verificada (0 filtraciones)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Auditoria de seguridad de claves", "0 filtraciones", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

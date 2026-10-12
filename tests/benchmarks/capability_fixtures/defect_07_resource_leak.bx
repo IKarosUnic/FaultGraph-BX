@@ -1,0 +1,9 @@
+/**
+ * Known Defect: Unclosed I/O resource (CWE-775 / CWE-404)
+ */
+class {
+    function readData( required string path ) {
+        var is = new FileInputStream( arguments.path );
+        return is.read();
+    }
+}

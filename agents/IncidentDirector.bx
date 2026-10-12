@@ -1,0 +1,551 @@
+/**
+ * IncidentDirector - orquestador del flujo INCIDENT ZERO.
+ *
+ * Fases:
+ *   1. Inspeccion estatica del servicio objetivo
+ *   2. Produccion: operacion normal y luego caida del gateway (la app revienta)
+ *   3. Caos: bateria completa de perturbaciones sobre el fallback
+ *   4. Causa raiz: diagnostico, grafo de fallos y segunda opinion LLM (opcional)
+ *   5. Parche: generacion del fallback endurecido
+ *   6. Verificacion: se repite el MISMO caos contra el codigo parcheado
+ *   7. Reporte: Markdown + JSON en reports/
+ *
+ * Las dependencias llegan inyectadas desde run.bxs. verifyEngineFactory es una funcion
+ * que crea el ChaosEngine del codigo parcheado una vez que el archivo parcheado existe.
+ */
+class {
+
+    public any function init( required any config, required any healer, required any chaosEngine, required any verifyEngineFactory, any eventBus, any knowledgeBase, any specializedAi ) {
+        variables.config        = arguments.config;
+        variables.healer        = arguments.healer;
+        variables.chaos         = arguments.chaosEngine;
+        variables.verifyFactory = arguments.verifyEngineFactory;
+        variables.eventBus      = structKeyExists( arguments, "eventBus" ) && !isNull( arguments.eventBus ) ? arguments.eventBus : new models.EventBus();
+        variables.knowledgeBase = structKeyExists( arguments, "knowledgeBase" ) && !isNull( arguments.knowledgeBase ) ? arguments.knowledgeBase : new models.KnowledgeBase( arguments.config );
+        variables.specializedAi = structKeyExists( arguments, "specializedAi" ) && !isNull( arguments.specializedAi ) ? arguments.specializedAi : new models.SpecializedAIEngine( arguments.config, null, null, variables.knowledgeBase );
+        variables.evidenceGraph = new models.synergy.SharedEvidenceGraph();
+        variables.adversaryEngine = new models.adversary.AdversaryEmulationEngine( arguments.config, variables.evidenceGraph, variables.knowledgeBase, variables.eventBus );
+        variables.surfaceReconstructor = variables.adversaryEngine.getReconstructor();
+        variables.orchestrator = new models.synergy.IntelligentOrchestrator( arguments.config, variables.evidenceGraph, variables.knowledgeBase, variables.eventBus );
+        variables.canaryManager = new models.resilience.CanaryRollbackManager( arguments.config, variables.eventBus );
+        variables.postMortemGenerator = new models.diagnosis.SrePostMortemGenerator( arguments.config, variables.evidenceGraph, variables.knowledgeBase );
+        variables.color         = arguments.config.useColor();
+        variables.esc           = char( 27 );
+        return this;
+    }
+
+    public any function getEventBus() { return variables.eventBus; }
+    public any function getKnowledgeBase() { return variables.knowledgeBase; }
+    public any function getSpecializedAi() { return variables.specializedAi; }
+    public any function getEvidenceGraph() { return variables.evidenceGraph; }
+    public any function getAdversaryEngine() { return variables.adversaryEngine; }
+    public any function getSurfaceReconstructor() { return variables.surfaceReconstructor; }
+    public any function getOrchestrator() { return variables.orchestrator; }
+    public any function getCanaryManager() { return variables.canaryManager; }
+    public any function getPostMortemGenerator() { return variables.postMortemGenerator; }
+
+    public struct function run() {
+        var t0      = getTickCount();
+        var cfg     = variables.config;
+        var summary = {
+            verified      : false,
+            promoted      : false,
+            patchedPath   : "",
+            reportMd      : "",
+            reportJson    : "",
+            before        : {},
+            after         : {},
+            durationMs    : 0
+        };
+
+        banner();
+        variables.eventBus.emit( "onIncidentStart", { "app": cfg.getAppName(), "target": cfg.getTargetSourcePath() } );
+
+        // ------------------------------------------------------------ FASE 1
+        phase( 1, "INSPECCION: analisis estatico del servicio objetivo" );
+        var inspection = variables.healer.inspectSource( cfg.getTargetSourcePath() );
+        if ( !inspection.exists ) {
+            emit( paint( "red", "  No se encontro " & cfg.getTargetSourcePath() ) );
+            return summary;
+        }
+        emit( "  Archivo  : target_app/PaymentService.bx (" & inspection.lineCount & " lineas)" );
+        if ( inspection.hasFallbackRegion ) {
+            emit( "  Fallback : lineas " & inspection.regionStart & " a " & inspection.regionEnd );
+        }
+        if ( arrayLen( inspection.findings ) == 0 && ( !structKeyExists( inspection, "securityFindings" ) || arrayLen( inspection.securityFindings ) == 0 ) ) {
+            emit( "  Sin hallazgos estaticos." );
+        }
+        for ( var f in inspection.findings ) {
+            emit( paint( "yellow", "  [!] L" & f.line & "  " & pad( f.code, 30 ) ) & f.risk );
+            emit( paint( "dim", "        > " & f.snippet ) );
+        }
+        // Auditoria de seguridad con IA local (bajo demanda)
+        if ( structKeyExists( cfg, "isLocalAiEnabled" ) && cfg.isLocalAiEnabled() && inspection.hasFallbackRegion ) {
+            var secAudit = variables.healer.auditSecurityWithLocalAi( cfg.getTargetSourcePath(), inspection );
+            inspection.securityAudit = secAudit;
+            inspection.securityFindings = secAudit.securityFindings;
+            if ( secAudit.ok && arrayLen( secAudit.securityFindings ) > 0 ) {
+                emit( paint( "cyan", "  [Seguridad IA Local] Hallazgos validados independientemente:" ) );
+                for ( var sf in secAudit.securityFindings ) {
+                    emit( paint( "yellow", "    [!] " & pad( sf.code, 26 ) ) & sf.risk );
+                    if ( len( sf.snippet ) ) {
+                        emit( paint( "dim", "        > " & sf.snippet ) );
+                    }
+                }
+            }
+        }
+        // Reconstruccion de la Superficie de Ataque y Grafo de Evidencias
+        var surface = variables.surfaceReconstructor.reconstruct( cfg.getTargetSourcePath() );
+        inspection.attackSurface = surface;
+        emit( "  Superficie : " & surface.entryPointsCount & " puntos de entrada, " & surface.sensitiveOperationsCount & " operaciones sensibles, " & surface.trustBoundariesCount & " limites de confianza" );
+        variables.eventBus.emit( "onStaticInspection", inspection );
+
+        // ------------------------------------------------------------ FASE 2
+        phase( 2, "PRODUCCION: operacion normal y luego caida del gateway" );
+        var control = variables.chaos.runScenario( variables.chaos.getScenario( "S00_HEALTHY_CONTROL" ) );
+        if ( control.survived ) {
+            emit( paint( "green", "  [ OK ] " ) & "Gateway sano: cobro " & control.status & " por " & control.channel );
+        } else {
+            emit( paint( "red", "  [FAIL] " ) & "Ni siquiera el control sano funciona: " & control.errorMessage );
+        }
+        var outage = variables.chaos.runScenario( variables.chaos.getScenario( "S01_GATEWAY_TIMEOUT" ) );
+        emit( "  El gateway externo deja de responder..." );
+        if ( outage.survived ) {
+            emit( paint( "green", "  [ OK ] " ) & "El fallback respondio: " & outage.status );
+        } else {
+            emit( paint( "red", "  >>> PaymentService.charge() REVIENTA durante la caida del gateway" ) );
+            emit( "      tipo    : " & outage.errorType );
+            emit( "      mensaje : " & outage.errorMessage );
+            if ( len( outage.errorLine ) ) {
+                emit( "      origen  : " & listLast( outage.errorTemplate, "/" & char( 92 ) ) & ", linea " & outage.errorLine );
+            }
+            emit( "      impacto : el cliente recibe un error 500 en lugar de un cobro diferido" );
+        }
+
+        // ------------------------------------------------------------ FASE 3
+        phase( 3, "CAOS: estresando el fallback con " & arrayLen( variables.chaos.getScenarios() ) & " escenarios" );
+        var before = variables.chaos.runAll();
+        printTable( before );
+        summary.before = before;
+        variables.eventBus.emit( "onChaosCompleted", before );
+
+        if ( before.failed == 0 ) {
+            emit( "" );
+            emit( paint( "green", "  El fallback resistio todo el caos. No hay nada que reparar." ) );
+            summary.verified   = true;
+            summary.durationMs = getTickCount() - t0;
+            variables.eventBus.emit( "onIncidentResolved", summary );
+            return summary;
+        }
+
+        // ------------------------------------------------------------ FASE 4
+        phase( 4, "CAUSA RAIZ: diagnostico y grafo de propagacion" );
+        var diagnosis = variables.healer.diagnose( before, inspection );
+        var n = 0;
+        for ( var cause in diagnosis.causes ) {
+            n = n + 1;
+            emit( paint( "bold", "  Causa " & n & ": " & cause.code ) & "  [" & cause.severity & "]" );
+            emit( "    " & cause.title );
+            emit( "    Escenarios : " & arrayToList( cause.scenarios, ", " ) );
+            emit( "    Evidencia  : " & left( cause.sampleError, 110 ) );
+            if ( len( cause.location ) ) {
+                emit( "    Ubicacion  : " & cause.location );
+            }
+            emit( "    Confianza  : " & cause.confidence );
+            emit( "    Por que    : " & cause.explanation );
+            emit( "" );
+        }
+        emit( "  Grafo de fallos:" );
+        for ( var gl in variables.healer.renderFaultGraph( diagnosis ) ) {
+            emit( gl );
+        }
+
+        // Base de Conocimiento Estructurada (Verificada)
+        var kbReferences = [];
+        for ( var cause in diagnosis.causes ) {
+            var kbHits = variables.knowledgeBase.search( cause.code, "", 2 );
+            for ( var kh in kbHits ) {
+                arrayAppend( kbReferences, kh );
+            }
+        }
+        diagnosis.knowledgeBaseReferences = kbReferences;
+        if ( arrayLen( kbReferences ) > 0 ) {
+            emit( "" );
+            emit( paint( "cyan", "  Base de Conocimiento Estructurada (Verificada):" ) );
+            for ( var ref in kbReferences ) {
+                emit( paint( "yellow", "    [" & ref.id & " | " & ref.verificationLevel & "] " ) & ref.title );
+                emit( paint( "dim", "      > " & ref.summary ) );
+            }
+        }
+
+        var llm = variables.healer.explainWithLlm( diagnosis, cfg.getTargetSourcePath() );
+        diagnosis.llm = llm;
+        if ( llm.ok ) {
+            emit( paint( "cyan", "  Segunda opinion del LLM (" & llm.model & "):" ) );
+            for ( var ll in listToArray( llm.text, char( 10 ), false ) ) {
+                emit( "    " & ll );
+            }
+        } else {
+            emit( paint( "dim", "  LLM remoto no utilizado: " & llm.error ) );
+        }
+
+        // Cuestionamiento de diagnostico con IA local (bajo demanda - Abogado del Diablo)
+        if ( structKeyExists( cfg, "isLocalAiEnabled" ) && cfg.isLocalAiEnabled() ) {
+            var localChallenge = variables.healer.challengeDiagnosisWithLocalAi( diagnosis, before );
+            diagnosis.localAi = localChallenge;
+            if ( localChallenge.ok ) {
+                var ch  = localChallenge.challenge;
+                var val = localChallenge.validation;
+                emit( "" );
+                emit( paint( "cyan", "  IA Local Especializada (" & localChallenge.model & ") - Cuestionamiento bajo demanda:" ) );
+                emit( "    Cuestionamiento : " & ch.challengeText );
+                if ( len( ch.riskIdentified ) ) {
+                    emit( "    Riesgo residual : " & ch.riskIdentified );
+                }
+                var vColor = val.accepted ? "green" : "yellow";
+                emit( paint( vColor, "    Validador Indep.: [" & val.verdict & "] " ) & val.reason );
+            } else if ( len( localChallenge.error ) ) {
+                emit( paint( "dim", "  IA Local Especializada no disponible: " & localChallenge.error ) );
+            }
+        }
+
+        // Formulacion de Hipotesis Adversarias Defensivas
+        var attackHypotheses = variables.adversaryEngine.formulateHypotheses( diagnosis.causes, surface );
+        diagnosis.attackHypotheses = attackHypotheses;
+        if ( arrayLen( attackHypotheses ) > 0 ) {
+            emit( "" );
+            emit( paint( "cyan", "  Hipotesis Adversarias Defensivas Formuladas (" & arrayLen( attackHypotheses ) & "):" ) );
+            for ( var ah in attackHypotheses ) {
+                var compLoc = structKeyExists( ah, "targetLocation" ) ? ah.targetLocation : ( structKeyExists( ah, "targetComponent" ) ? ah.targetComponent : "" );
+                emit( paint( "yellow", "    [HYP] " & ah.attackVector ) & " (" & compLoc & ")" );
+                emit( paint( "dim", "      > Precondicion: " & ( arrayLen( ah.preconditions ) > 0 ? ah.preconditions[ 1 ] : "N/A" ) ) );
+            }
+        }
+        variables.eventBus.emit( "onDiagnosisCompleted", diagnosis );
+
+        // ------------------------------------------------------------ FASE 5
+        phase( 5, "PARCHE: generando el fallback endurecido" );
+        var patch = variables.healer.buildPatch( cfg.getTargetSourcePath(), diagnosis, cfg.getPatchedSourcePath() );
+        if ( !patch.ok ) {
+            emit( paint( "red", "  No se pudo generar un parche: " & patch.reason ) );
+            summary.durationMs = getTickCount() - t0;
+            return summary;
+        }
+        summary.patchedPath = patch.patchedPath;
+        variables.eventBus.emit( "onPatchGenerated", { "patchedPath": patch.patchedPath, "fixes": patch.fixes } );
+        for ( var fx in patch.fixes ) {
+            emit( "  Fix: " & fx );
+        }
+        emit( "  Archivo parcheado: target_app/PaymentServicePatched.bx" );
+        emit( "" );
+        for ( var dl in patch.diff ) {
+            if ( left( dl, 1 ) == "+" ) {
+                emit( paint( "green", "  " & dl ) );
+            } else {
+                emit( paint( "red", "  " & dl ) );
+            }
+        }
+
+        // ------------------------------------------------------------ FASE 6
+        phase( 6, "VERIFICACION: repitiendo el mismo caos contra el codigo parcheado" );
+        var verifyEngine = variables.verifyFactory();
+        var after = verifyEngine.runAll();
+        printTable( after );
+        summary.after = after;
+        variables.eventBus.emit( "onVerificationCompleted", after );
+
+        summary.verified = after.failed == 0;
+        emit( "" );
+        if ( summary.verified ) {
+            emit( paint( "green", "  PARCHE VERIFICADO: " & after.survived & "/" & after.total & " escenarios sobreviven (antes: " & before.survived & "/" & before.total & ")" ) );
+
+            // Emulacion adversaria dinamica sobre el servicio parcheado
+            if ( arrayLen( attackHypotheses ) > 0 ) {
+                var patchedInstance = structKeyExists( verifyEngine, "createServiceInstance" ) ? verifyEngine.createServiceInstance() : null;
+                if ( !isNull( patchedInstance ) ) {
+                    var emulSummary = variables.adversaryEngine.emulateCampaign( patchedInstance, attackHypotheses );
+                    summary.adversaryEmulation = emulSummary;
+                    emit( paint( "green", "  EMULACION ADVERSARIA: " & emulSummary.disproved & "/" & emulSummary.totalHypotheses & " hipotesis neutralizadas por el parche (" & emulSummary.confirmed & " residuales)" ) );
+                }
+            }
+        } else {
+            emit( paint( "red", "  PARCHE NO VERIFICADO: siguen fallando " & after.failed & " escenarios. No se promueve." ) );
+        }
+
+        // Promocion y Evaluacion Canary
+        if ( summary.verified ) {
+            var src = cfg.getTargetSourcePath();
+            var bak = src & ".bak";
+            variables.canaryManager.startCanary( src, bak );
+            var probeInstance = structKeyExists( verifyEngine, "createServiceInstance" ) ? verifyEngine.createServiceInstance() : null;
+            if ( !isNull( probeInstance ) ) {
+                var canaryRes = variables.canaryManager.runCanarySimulation( probeInstance );
+                summary.canary = canaryRes;
+            }
+
+            if ( cfg.shouldPromote() ) {
+                fileWrite( bak, fileRead( src ) );
+                fileWrite( src, patch.patchedSource );
+                summary.promoted = true;
+                emit( paint( "yellow", "  PROMOVIDO: PaymentService.bx actualizado (copia de seguridad en PaymentService.bx.bak)" ) );
+                emit( paint( "green", "  CANARY: Verificacion de presupuesto de error superada (0 fallos, auto-rollback activo)" ) );
+            } else {
+                emit( paint( "dim", "  Para aplicar el parche al original: FAULTGRAPH_PROMOTE=1 y volver a ejecutar." ) );
+            }
+        }
+
+        // ------------------------------------------------------------ FASE 7
+        phase( 7, "REPORTE" );
+        summary.durationMs = getTickCount() - t0;
+        if ( summary.verified ) {
+            var kbHistId = variables.knowledgeBase.recordDiagnosticHistory( { "diagnosis": diagnosis, "verified": true } );
+            summary[ "knowledgeBaseRecordId" ] = kbHistId;
+        }
+
+        // Sintesis de SRE Post-Mortem y Paquete GitOps
+        var incidentPayload = {
+            "id"                 : "INC-" & dateTimeFormat( now(), "yyyyMMdd-HHmmss" ),
+            "durationMs"         : summary.durationMs,
+            "inspection"         : inspection,
+            "before"             : before,
+            "diagnosis"          : diagnosis,
+            "patch"              : patch,
+            "after"              : after,
+            "verified"           : summary.verified,
+            "promoted"           : summary.promoted,
+            "adversaryEmulation" : structKeyExists( summary, "adversaryEmulation" ) ? summary.adversaryEmulation : {}
+        };
+        var pmResult = variables.postMortemGenerator.generate( incidentPayload );
+        summary.srePostMortemMd   = pmResult.md;
+        summary.srePostMortemJson = pmResult.json;
+        summary.gitOpsPr          = pmResult.gitOpsPr;
+
+        var paths = writeReports( inspection, before, diagnosis, patch, after, summary );
+        summary.reportMd   = paths.md;
+        summary.reportJson = paths.json;
+        emit( "  Markdown        : " & paths.md );
+        emit( "  JSON            : " & paths.json );
+        emit( "  SRE Post-Mortem : " & pmResult.md );
+        emit( "  GitOps PR Branch: " & pmResult.gitOpsPr.branchName );
+        emit( "" );
+        emit( "  Tiempo total: " & summary.durationMs & " ms" );
+        emit( "============================================================" );
+
+        variables.eventBus.emit( "onIncidentResolved", summary );
+        return summary;
+    }
+
+    // ==================================================================
+    // Reportes
+    // ==================================================================
+
+    private struct function writeReports( required struct inspection, required struct before, required struct diagnosis, required struct patch, required struct after, required struct summary ) {
+        var dir = variables.config.getReportsDir();
+        if ( !directoryExists( dir ) ) {
+            directoryCreate( dir, true );
+        }
+        var stamp  = dateTimeFormat( now(), "yyyyMMdd-HHmmss" );
+        var mdPath = dir & "incident-" & stamp & ".md";
+        var jsPath = dir & "incident-" & stamp & ".json";
+
+        var md = [];
+        arrayAppend( md, mdH( 1, "FaultGraph-BX - Reporte de incidente" ) );
+        arrayAppend( md, "" );
+        arrayAppend( md, "Generado: " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+        arrayAppend( md, "" );
+        arrayAppend( md, "Resultado: **" & ( arguments.summary.verified ? "PARCHE VERIFICADO" : "PARCHE NO VERIFICADO" ) & "** (antes " & arguments.before.survived & "/" & arguments.before.total & ", despues " & arguments.after.survived & "/" & arguments.after.total & ")" );
+        arrayAppend( md, "" );
+        arrayAppend( md, mdH( 2, "Causas raiz" ) );
+        for ( var cause in arguments.diagnosis.causes ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 3, cause.code & " (" & cause.severity & ")" ) );
+            arrayAppend( md, cause.title );
+            arrayAppend( md, "" );
+            arrayAppend( md, "- Escenarios: " & arrayToList( cause.scenarios, ", " ) );
+            arrayAppend( md, "- Evidencia: `" & cause.sampleError & "`" );
+            arrayAppend( md, "- Explicacion: " & cause.explanation );
+            arrayAppend( md, "- Remediacion: " & cause.remediation );
+            arrayAppend( md, "- Confianza: " & cause.confidence );
+        }
+        arrayAppend( md, "" );
+        arrayAppend( md, mdH( 2, "Grafo de fallos" ) );
+        arrayAppend( md, "" );
+        arrayAppend( md, "```mermaid" );
+        arrayAppend( md, variables.healer.toMermaid( arguments.diagnosis ) );
+        arrayAppend( md, "```" );
+        arrayAppend( md, "" );
+        arrayAppend( md, mdH( 2, "Caos antes y despues del parche" ) );
+        arrayAppend( md, "" );
+        arrayAppend( md, "| Escenario | Antes | Despues |" );
+        arrayAppend( md, "|---|---|---|" );
+        for ( var i = 1; i <= arrayLen( arguments.before.results ); i++ ) {
+            var b = arguments.before.results[ i ];
+            var a = arguments.after.results[ i ];
+            arrayAppend( md, "| " & b.id & " | " & ( b.survived ? "OK" : "FAIL" ) & " | " & ( a.survived ? "OK" : "FAIL" ) & " |" );
+        }
+        arrayAppend( md, "" );
+        arrayAppend( md, mdH( 2, "Parche (diff de la region de fallback)" ) );
+        arrayAppend( md, "" );
+        arrayAppend( md, "```diff" );
+        for ( var dl in arguments.patch.diff ) {
+            arrayAppend( md, dl );
+        }
+        arrayAppend( md, "```" );
+        if ( structKeyExists( arguments.diagnosis.llm, "ok" ) && arguments.diagnosis.llm.ok ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 2, "Segunda opinion del LLM (" & arguments.diagnosis.llm.model & ")" ) );
+            arrayAppend( md, "" );
+            arrayAppend( md, arguments.diagnosis.llm.text );
+        }
+        if ( structKeyExists( arguments.diagnosis, "localAi" ) && arguments.diagnosis.localAi.used && arguments.diagnosis.localAi.ok ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 2, "Evaluacion de Seguridad IA Local (" & arguments.diagnosis.localAi.model & ")" ) );
+            arrayAppend( md, "" );
+            arrayAppend( md, "- **Cuestionamiento bajo demanda**: " & arguments.diagnosis.localAi.challenge.challengeText );
+            if ( len( arguments.diagnosis.localAi.challenge.riskIdentified ) ) {
+                arrayAppend( md, "- **Riesgo residual advertido**: " & arguments.diagnosis.localAi.challenge.riskIdentified );
+            }
+            arrayAppend( md, "- **Veredicto Validador Independiente**: `" & arguments.diagnosis.localAi.validation.verdict & "` - " & arguments.diagnosis.localAi.validation.reason );
+            arrayAppend( md, "- **Latencia y recursos**: " & arguments.diagnosis.localAi.durationMs & " ms, " & arguments.diagnosis.localAi.tokens & " tokens evaluados." );
+        }
+        if ( structKeyExists( arguments.diagnosis, "knowledgeBaseReferences" ) && arrayLen( arguments.diagnosis.knowledgeBaseReferences ) > 0 ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 2, "Referencias Verificadas de la Base de Conocimiento" ) );
+            for ( var kref in arguments.diagnosis.knowledgeBaseReferences ) {
+                arrayAppend( md, "" );
+                arrayAppend( md, "- **[" & kref.id & " | " & kref.verificationLevel & "] " & kref.title & "**" );
+                arrayAppend( md, "  - *Fuente:* " & kref.source & " (Version: " & kref.version & ", Confiabilidad: " & kref.reliability & ")" );
+                arrayAppend( md, "  - *Sintesis:* " & kref.summary );
+                if ( len( kref.recommendations ) ) {
+                    arrayAppend( md, "  - *Recomendacion:* " & kref.recommendations );
+                }
+            }
+        }
+        if ( structKeyExists( arguments.summary, "adversaryEmulation" ) ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 2, "Emulacion Adversaria Defensiva y Grafo de Evidencias" ) );
+            arrayAppend( md, "" );
+            var em = arguments.summary.adversaryEmulation;
+            arrayAppend( md, "- **Hipotesis evaluadas**: " & em.totalHypotheses );
+            arrayAppend( md, "- **Neutralizadas por el parche (DISPROVED)**: " & em.disproved );
+            arrayAppend( md, "- **Vulnerabilidades residuales (CONFIRMED)**: " & em.confirmed );
+            arrayAppend( md, "- **Inconclusas**: " & em.inconclusive );
+            arrayAppend( md, "" );
+            arrayAppend( md, "```mermaid" );
+            arrayAppend( md, variables.evidenceGraph.renderMermaid() );
+            arrayAppend( md, "```" );
+        }
+        if ( structKeyExists( arguments.summary, "srePostMortemMd" ) ) {
+            arrayAppend( md, "" );
+            arrayAppend( md, mdH( 2, "SRE Post-Mortem y Paquete GitOps" ) );
+            arrayAppend( md, "" );
+            arrayAppend( md, "- **SRE Post-Mortem**: `" & arguments.summary.srePostMortemMd & "`" );
+            arrayAppend( md, "- **Rama GitOps**: `" & arguments.summary.gitOpsPr.branchName & "`" );
+            arrayAppend( md, "- **Commit Sugerido**: `" & arguments.summary.gitOpsPr.commitMessage & "`" );
+        }
+        fileWrite( mdPath, arrayToList( md, char( 10 ) ) );
+
+        var patchInfo = duplicate( arguments.patch );
+        structDelete( patchInfo, "patchedSource" );
+        var payload = {
+            "generatedAt" : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "verified"    : arguments.summary.verified,
+            "inspection"  : arguments.inspection,
+            "before"      : arguments.before,
+            "diagnosis"   : arguments.diagnosis,
+            "patch"       : patchInfo,
+            "after"       : arguments.after
+        };
+        var json = jsonSerialize( payload );
+        try {
+            json = jsonPrettify( json );
+        } catch ( any ignore ) {
+            // si el runtime no soporta jsonPrettify se deja el JSON compacto
+        }
+        fileWrite( jsPath, json );
+
+        return { md: mdPath, json: jsPath };
+    }
+
+    // ==================================================================
+    // Presentacion en consola
+    // ==================================================================
+
+    private void function banner() {
+        emit( "============================================================" );
+        emit( paint( "bold", "  " & variables.config.getAppName() & " v" & variables.config.getVersion() ) & "  |  INCIDENT ZERO  |  Ortus Solutions x ANIA" );
+        var rt = "";
+        try {
+            rt = server.boxlang.version;
+        } catch ( any ignore ) {
+            rt = "desconocida";
+        }
+        var isLocalAiOn = structKeyExists( variables.config, "isLocalAiEnabled" ) && variables.config.isLocalAiEnabled();
+        var localModel  = ( isLocalAiOn && structKeyExists( variables.config, "getLocalAi" ) ) ? variables.config.getLocalAi().model : "qwen2.5-coder:1.5b";
+        var localAiStatus = isLocalAiOn ? "activo (" & localModel & " via Ollama)" : "desactivado (offline / heuristico puro)";
+        var isLlmOn     = structKeyExists( variables.config, "isLlmEnabled" ) && variables.config.isLlmEnabled();
+        var llmModel    = ( isLlmOn && structKeyExists( variables.config, "getLlm" ) ) ? variables.config.getLlm().model : "claude-sonnet-5-5";
+        var llmStatus   = isLlmOn ? "activo (" & llmModel & ")" : "desactivado";
+        emit( "  Runtime BoxLang       : " & rt );
+        emit( "  IA Local (Seguridad)  : " & localAiStatus );
+        emit( "  LLM Remoto (Anthropic): " & llmStatus );
+        emit( "============================================================" );
+    }
+
+    private void function phase( required numeric number, required string title ) {
+        emit( "" );
+        emit( paint( "cyan", "--- FASE " & arguments.number & " :: " & arguments.title & " ---" ) );
+    }
+
+    private void function printTable( required struct report ) {
+        emit( "  Motor: " & arguments.report.label );
+        for ( var r in arguments.report.results ) {
+            var tag    = r.survived ? paint( "green", "[ OK ]" ) : paint( "red", "[FAIL]" );
+            var detail = "";
+            if ( r.survived ) {
+                var st = structKeyExists( r, "status" ) ? r.status : "OK";
+                var ch = structKeyExists( r, "channel" ) ? ( " via " & r.channel ) : "";
+                detail = st & ch;
+            } else {
+                var et = structKeyExists( r, "errorType" ) ? r.errorType : "Error";
+                var em = structKeyExists( r, "errorMessage" ) ? ( ": " & r.errorMessage ) : "";
+                detail = et & em;
+            }
+            emit( "  " & tag & " " & pad( r.id, 33 ) & left( detail, 72 ) );
+        }
+        emit( "  Sobrevivieron " & arguments.report.survived & " de " & arguments.report.total & "  (" & arguments.report.durationMs & " ms)" );
+    }
+
+    private void function emit( required string text ) {
+        println( arguments.text );
+    }
+
+    private string function paint( required string colorName, required string text ) {
+        if ( !variables.color ) {
+            return arguments.text;
+        }
+        var code = "0";
+        switch ( arguments.colorName ) {
+            case "red":    code = "31"; break;
+            case "green":  code = "32"; break;
+            case "yellow": code = "33"; break;
+            case "cyan":   code = "36"; break;
+            case "bold":   code = "1";  break;
+            case "dim":    code = "2";  break;
+        }
+        return variables.esc & "[" & code & "m" & arguments.text & variables.esc & "[0m";
+    }
+
+    private string function pad( required any text, required numeric width ) {
+        var s = toString( arguments.text );
+        if ( len( s ) > arguments.width ) {
+            return left( s, arguments.width - 1 ) & "~";
+        }
+        return s & repeatString( " ", arguments.width - len( s ) );
+    }
+
+    private string function mdH( required numeric level, required string text ) {
+        return repeatString( char( 35 ), arguments.level ) & " " & arguments.text;
+    }
+
+}

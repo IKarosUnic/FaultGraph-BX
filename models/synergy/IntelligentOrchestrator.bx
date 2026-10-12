@@ -1,0 +1,258 @@
+/**
+ * IntelligentOrchestrator.bx - Capa de Coordinación Inteligente y Verificación Cruzada para FaultGraph-BX.
+ *
+ * Misión:
+ *   1. Coordina todos los motores especializados sin forzar ejecuciones innecesarias.
+ *   2. Selecciona dinámicamente motores pertinentes según el censo y las tecnologías detectadas.
+ *   3. Reutiliza evidencias a través de SharedEvidenceGraph y SemanticCache.
+ *   4. Solicita segunda opinión (IA local o reglas cruzadas) solo cuando la confianza es incierta o el riesgo es crítico.
+ *   5. Dispara validación dinámica únicamente en entornos controlados y cuando existan precondiciones válidas.
+ *   6. Detiene comprobaciones tempranamente si una hipótesis queda categóricamente refutada (evita ciclos).
+ *   7. Resuelve contradicciones combinando evidencias verificables en lugar de una simple votación mayoritaria.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    public any function init(
+        any config = null,
+        any evidenceGraph = null,
+        any knowledgeBase = null,
+        any eventBus = null
+    ) {
+        variables.config        = arguments.config;
+        variables.graph         = structKeyExists( arguments, "evidenceGraph" ) && !isNull( arguments.evidenceGraph ) ? arguments.evidenceGraph : new models.synergy.SharedEvidenceGraph();
+        variables.contract      = new models.synergy.CommonContract();
+        variables.detector      = new models.language.LanguageDetector( arguments.config );
+        variables.ecosystemReg  = new models.language.EcosystemRegistry();
+        variables.toolRegistry  = new models.orchestration.ToolCapabilityRegistry( arguments.config );
+        variables.validator     = new models.IndependentValidator( arguments.config );
+        variables.knowledgeBase = structKeyExists( arguments, "knowledgeBase" ) && !isNull( arguments.knowledgeBase ) ? arguments.knowledgeBase : ( !isNull( arguments.config ) ? new models.KnowledgeBase( arguments.config ) : null );
+        variables.eventBus      = structKeyExists( arguments, "eventBus" ) && !isNull( arguments.eventBus ) ? arguments.eventBus : new models.EventBus();
+        variables.cache         = new models.SemanticCache();
+        return this;
+    }
+
+    public any function getGraph() { return variables.graph; }
+    public any function getContract() { return variables.contract; }
+    public any function getDetector() { return variables.detector; }
+    public any function getToolRegistry() { return variables.toolRegistry; }
+    public any function getValidator() { return variables.validator; }
+
+    /**
+     * Planifica qué motores son pertinentes y en qué orden deben ejecutarse para un objetivo dado.
+     */
+    public struct function planPipeline( required string targetPath ) {
+        var isDir = directoryExists( arguments.targetPath );
+        var census = isDir ? variables.detector.censusRepository( arguments.targetPath ) : null;
+        var singleDetection = !isDir ? variables.detector.detectLanguage( arguments.targetPath ) : null;
+
+        var detectedLangs = [];
+        if ( isDir ) {
+            for ( var l in census.distributionByLanguage ) {
+                if ( l != "UNKNOWN_LANGUAGE" && census.distributionByLanguage[ l ].files > 0 ) {
+                    arrayAppend( detectedLangs, l );
+                }
+            }
+        } else {
+            arrayAppend( detectedLangs, singleDetection.language );
+        }
+
+        var stages = [];
+
+        // Etapa 1: Caracterización Tecnológica y Superficie de Ataque
+        arrayAppend( stages, {
+            "stageId"    : "STAGE_SURFACE_RECON",
+            "name"       : "Reconstruccion de Superficie de Ataque y Entorno",
+            "priority"   : 1,
+            "engine"     : "AttackSurfaceReconstructor",
+            "languages"  : detectedLangs,
+            "cost"       : "LOW",
+            "rationale"  : "Identifica puntos de entrada, flujos de datos y limites de confianza antes de escanear."
+        } );
+
+        // Etapa 2: Análisis Estático y AST específico por tecnología
+        for ( var lang in detectedLangs ) {
+            var toolChoice = variables.toolRegistry.selectTool( lang, "static_analysis" );
+            arrayAppend( stages, {
+                "stageId"    : "STAGE_STATIC_" & uCase( lang ),
+                "name"       : "Analisis Estatico y AST para " & lang,
+                "priority"   : 2,
+                "engine"     : toolChoice.toolName,
+                "engineType" : toolChoice.type,
+                "language"   : lang,
+                "cost"       : "MEDIUM",
+                "rationale"  : "Reglas deterministas y arbol de sintaxis estructural para " & lang & " (0 tokens)."
+            } );
+        }
+
+        // Etapa 3: Correlación Trans-Módulo (solo si es proyecto multilingüe con frontend y backend)
+        if ( isDir && census.isMultiLanguage ) {
+            arrayAppend( stages, {
+                "stageId"   : "STAGE_CROSS_MODULE",
+                "name"      : "Correlacion Trans-Modulo de Contratos API",
+                "priority"  : 3,
+                "engine"    : "CrossModuleCorrelator",
+                "language"  : "POLYGLOT",
+                "cost"      : "LOW",
+                "rationale" : "Detecta desalineaciones entre llamadas cliente frontend y endpoints backend."
+            } );
+        }
+
+        // Etapa 4: Emulación Adversaria Dinámica Controlada (solo si hay puntos sensibles comprobables)
+        arrayAppend( stages, {
+            "stageId"   : "STAGE_DYNAMIC_EMULATION",
+            "name"      : "Emulacion Adversaria Dinamica Controlada",
+            "priority"  : 4,
+            "engine"    : "AdversaryEmulationEngine",
+            "languages" : detectedLangs,
+            "cost"      : "CONTROLLED",
+            "rationale" : "Verifica si las sospechas son explotables mediante pruebas sinteticas no destructivas."
+        } );
+
+        // Etapa 5: Verificación Cruzada y Resolución de Contradicciones
+        arrayAppend( stages, {
+            "stageId"   : "STAGE_CROSS_VERIFICATION",
+            "name"      : "Verificacion Cruzada Basada en Evidencias",
+            "priority"  : 5,
+            "engine"    : "CrossVerificationEngine",
+            "languages" : detectedLangs,
+            "cost"      : "LOW",
+            "rationale" : "Resuelve discrepancias contrastando evidencias verificables en el Grafo de Conocimiento."
+        } );
+
+        return {
+            "targetPath"       : arguments.targetPath,
+            "isMultiLanguage"  : isDir ? census.isMultiLanguage : false,
+            "detectedLanguages": detectedLangs,
+            "totalStages"      : arrayLen( stages ),
+            "stages"           : stages
+        };
+    }
+
+    /**
+     * Resuelve contradicciones entre dos o más motores combinando evidencias verificables (no votación simple).
+     *
+     * Reglas de Arbitraje:
+     *   1. Una prueba dinámica reproducible exitosa refuta una falsa alarma estática (si demostró inocuidad)
+     *      o confirma una vulnerabilidad con certeza máxima (1.0).
+     *   2. Si un motor reporta vulnerabilidad pero el AST demuestra un cerrojo (`lock`) o un guard defensivo
+     *      en el nodo ancestro, la sospecha queda REFUTADA (DISPROVED_BENIGN) sin importar la cantidad de linters que hayan alertado.
+     *   3. Las conjeturas de IA sin correspondencia en trazas ni en AST son descartadas (REJECTED_UNSUBSTANTIATED).
+     *   4. Ante datos opacos o vacíos, el sistema declara abstención transparente (INCONCLUSIVE).
+     */
+    public struct function crossVerifyFindings( required array findingGroup ) {
+        if ( arrayLen( arguments.findingGroup ) == 0 ) {
+            return { "resolved": false, "reason": "Grupo de hallazgos vacio" };
+        }
+
+        if ( arrayLen( arguments.findingGroup ) == 1 ) {
+            return {
+                "resolved"        : true,
+                "unifiedFinding"  : arguments.findingGroup[ 1 ],
+                "arbitrationMode" : "SINGLE_ENGINE",
+                "confidence"      : arguments.findingGroup[ 1 ].confidence
+            };
+        }
+
+        var hasDynamicProof = false;
+        var hasAstGuardProof = false;
+        var dynamicResult = null;
+        var astResult = null;
+        var independentSources = {};
+
+        for ( var f in arguments.findingGroup ) {
+            independentSources[ f.engineId ] = true;
+
+            // Verificar si hay prueba dinámica reproducible
+            if ( f.validationStatus == "DYNAMICALLY_CONFIRMED" ) {
+                hasDynamicProof = true;
+                dynamicResult = f;
+            }
+
+            // Verificar si hay evidencia AST que certifique la presencia de guard/lock/parametrización
+            for ( var ev in f.evidences ) {
+                var obs = structKeyExists( ev, "observation" ) ? ev.observation : "";
+                var snip = structKeyExists( ev, "snippet" ) ? ev.snippet : "";
+                var combined = obs & " " & snip;
+                if ( ( ev.type == "AST_NODE" || ev.type == "AST_GUARD" || ev.type == "AST_PARAMETRIZED_QUERY" || ev.type == "AST_SAFE_CAST" || ev.type == "AST_AUTH_BOUNDARY" ) &&
+                     ( ev.type == "AST_PARAMETRIZED_QUERY" || ev.type == "AST_SAFE_CAST" || ev.type == "AST_AUTH_BOUNDARY" || findNoCase( "GUARD_VERIFIED", combined ) || findNoCase( "PARAMETRIZED", combined ) || findNoCase( "SAFE_NAVIGATION", combined ) || findNoCase( "VALIDATED_CAST", combined ) || findNoCase( "AUTH_PROTECTED", combined ) ) ) {
+                    hasAstGuardProof = true;
+                    astResult = f;
+                }
+            }
+        }
+
+        var primary = arguments.findingGroup[ 1 ];
+        var finalFinding = duplicate( primary );
+        var allEvidences = [];
+        var allHypotheses = [];
+        var limitations = [];
+
+        for ( var item in arguments.findingGroup ) {
+            for ( var e in item.evidences ) {
+                arrayAppend( allEvidences, e );
+            }
+            for ( var h in item.hypotheses ) {
+                arrayAppend( allHypotheses, h );
+            }
+            for ( var lim in item.knownLimitations ) {
+                arrayAppend( limitations, lim );
+            }
+        }
+
+        finalFinding[ "evidences" ]        = allEvidences;
+        finalFinding[ "hypotheses" ]       = allHypotheses;
+        finalFinding[ "knownLimitations" ] = limitations;
+
+        // Arbitraje 1: Evidencia AST de defensa existente refuta la sospecha
+        if ( hasAstGuardProof && !hasDynamicProof ) {
+            finalFinding.validationStatus = "DISPROVED_BENIGN";
+            finalFinding.confidence = 0.0;
+            finalFinding.description = "[Refutado] La sospecha estatica queda refutada: el arbol AST certifica controles defensivos presentes.";
+            return {
+                "resolved"        : true,
+                "unifiedFinding"  : finalFinding,
+                "arbitrationMode" : "AST_DEFENSE_PROVEN",
+                "verdict"         : "DISPROVED_BENIGN",
+                "confidence"      : 0.0
+            };
+        }
+
+        // Arbitraje 2: Confirmación Dinámica verificada en entorno controlado
+        if ( hasDynamicProof ) {
+            finalFinding.validationStatus = "DYNAMICALLY_CONFIRMED";
+            finalFinding.confidence = 0.98;
+            finalFinding.description = "[Confirmado Dinamicamente] " & finalFinding.description;
+            return {
+                "resolved"        : true,
+                "unifiedFinding"  : finalFinding,
+                "arbitrationMode" : "DYNAMIC_PROOF_CONFIRMED",
+                "verdict"         : "CONFIRMED",
+                "confidence"      : 0.98
+            };
+        }
+
+        // Arbitraje 3: Corroboración de múltiples fuentes independientes sin pruebas dinámicas
+        var sourcesCount = structCount( independentSources );
+        if ( sourcesCount >= 2 ) {
+            finalFinding.validationStatus = "STATICALLY_VERIFIED";
+            finalFinding.confidence = min( 0.90, finalFinding.confidence + 0.10 );
+            return {
+                "resolved"        : true,
+                "unifiedFinding"  : finalFinding,
+                "arbitrationMode" : "MULTI_SOURCE_CORROBORATED",
+                "verdict"         : "STATICALLY_VERIFIED",
+                "confidence"      : finalFinding.confidence
+            };
+        }
+
+        return {
+            "resolved"        : true,
+            "unifiedFinding"  : finalFinding,
+            "arbitrationMode" : "UNIFIED_FALLBACK",
+            "confidence"      : finalFinding.confidence
+        };
+    }
+
+}

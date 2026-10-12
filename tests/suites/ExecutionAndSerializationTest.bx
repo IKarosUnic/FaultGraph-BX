@@ -1,0 +1,196 @@
+/**
+ * ExecutionAndSerializationTest - Suite B1: Ejecucion, imports y serializacion.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testConfigInstantiation();
+        testChaosEngineInstantiation();
+        testHealerInstantiation();
+        testDirectorInstantiation();
+        testPaymentServiceInstantiation();
+        testPaymentServiceDefaultGatewayBehavior();
+        testSerializationRoundtrip();
+        testScenarioRegistryCustomRegistration();
+    }
+
+    private void function testConfigInstantiation() {
+        var id = "TC-B1-01";
+        var scenario = "Instanciacion correcta de Config y lectura de parametros";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            variables.assert.isEqual( "FaultGraph-BX", cfg.getAppName() );
+            variables.assert.isEqual( "1.0.0", cfg.getVersion() );
+            variables.assert.isNotEmpty( cfg.getTargetSourcePath() );
+            var targetCfg = cfg.getTargetServiceConfig();
+            variables.assert.isStructVal( targetCfg );
+            variables.assert.isEqual( "USD", targetCfg.currency );
+
+            variables.reporter.record( id, scenario, "new config.Config(rootDir)", "Config inicializado con claves validas", "Config valido con appName=" & cfg.getAppName(), "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "new config.Config(rootDir)", "Config inicializado", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testChaosEngineInstantiation() {
+        var id = "TC-B1-02";
+        var scenario = "Instanciacion de ChaosEngine y lectura del catalogo de 8 escenarios";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dummyFactory = function( c, g ) { return {}; };
+            var chaos = new models.ChaosEngine( dummyFactory, cfg.getTargetServiceConfig(), "TestEngine" );
+            var list = chaos.getScenarios();
+            variables.assert.isArrayVal( list );
+            variables.assert.isEqual( 8, arrayLen( list ) );
+            variables.assert.isEqual( "S00_HEALTHY_CONTROL", list[ 1 ].id );
+
+            variables.reporter.record( id, scenario, "chaos.getScenarios()", "8 escenarios catalogados", "8 escenarios recibidos correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "chaos.getScenarios()", "8 escenarios", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testHealerInstantiation() {
+        var id = "TC-B1-03";
+        var scenario = "Instanciacion de Healer e inspeccion estatica de PaymentService";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+            var insp = healer.inspectSource( cfg.getTargetSourcePath() );
+            variables.assert.isTrue( insp.exists );
+            variables.assert.isTrue( insp.hasFallbackRegion );
+            variables.assert.isTrue( insp.regionStart > 0 );
+            variables.assert.isTrue( insp.regionEnd > insp.regionStart );
+            variables.assert.isArrayVal( insp.findings );
+
+            variables.reporter.record( id, scenario, "healer.inspectSource(targetSource)", "Fallback region detectada con findings", "Region: " & insp.regionStart & "-" & insp.regionEnd & ", findings=" & arrayLen( insp.findings ), "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "healer.inspectSource(targetSource)", "Fallback region detectada", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testDirectorInstantiation() {
+        var id = "TC-B1-04";
+        var scenario = "Instanciacion del IncidentDirector con todas sus dependencias inyectadas";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healer = new models.Healer( cfg );
+            var dummyFactory = function( c, g ) { return {}; };
+            var chaos = new models.ChaosEngine( dummyFactory, cfg.getTargetServiceConfig(), "TestEngine" );
+            var director = new agents.IncidentDirector( cfg, healer, chaos, function() { return chaos; } );
+            variables.assert.isTrue( isObject( director ) );
+
+            variables.reporter.record( id, scenario, "new agents.IncidentDirector(...)", "Director instanciado como objeto", "Objeto creado correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "new agents.IncidentDirector(...)", "Director instanciado", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testPaymentServiceInstantiation() {
+        var id = "TC-B1-05";
+        var scenario = "Instanciacion y ejecucion base de PaymentService con gateway sano inyectado";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var healthyGateway = function( orderId, amount, currency ) {
+                return { "authCode": "AUTH-12345", "status": "OK" };
+            };
+            var ps = new target_app.PaymentService( cfg.getTargetServiceConfig(), healthyGateway );
+            var reply = ps.charge( "ORD-TEST-001", 100.0, "USD" );
+            variables.assert.isEqual( "APPROVED", reply.status );
+            variables.assert.isEqual( "GATEWAY", reply.channel );
+            variables.assert.isEqual( 100.0, reply.amount );
+            var stats = ps.getStats();
+            variables.assert.isEqual( 1, stats.charges );
+            variables.assert.isEqual( 1, stats.approved );
+
+            variables.reporter.record( id, scenario, "ps.charge('ORD-TEST-001', 100, gateway)", "status: APPROVED, channel: GATEWAY", "status=" & reply.status & ", channel=" & reply.channel, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "ps.charge(...)", "APPROVED", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testPaymentServiceDefaultGatewayBehavior() {
+        var id = "TC-B1-07";
+        var scenario = "Verificacion de correccion en constructor: gateway omitido inicializa closure por defecto sanamente";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            // Sin pasar gateway: ahora valida !isNull(arguments.gateway) y activa el closure sano
+            var ps = new target_app.PaymentService( cfg.getTargetServiceConfig() );
+            var reply = ps.charge( "ORD-DEFECT-FIXED", 50.0, "USD" );
+            variables.assert.isEqual( "APPROVED", reply.status );
+            variables.assert.isEqual( "GATEWAY", reply.channel );
+            variables.assert.isTrue( structKeyExists( reply, "authCode" ) );
+
+            variables.reporter.record( id, scenario, "ps.init(config) sin gateway", "APPROVED via GATEWAY (closure por defecto activo)", "status=" & reply.status & ", channel=" & reply.channel, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Correccion en constructor", "APPROVED", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSerializationRoundtrip() {
+        var id = "TC-B1-06";
+        var scenario = "Serializacion JSON roundtrip de reportes y estructuras de diagnostico";
+        var t0 = getTickCount();
+        try {
+            var sample = {
+                "id" : "TC-SAMPLE",
+                "causes" : [
+                    { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL" },
+                    { "code": "TYPE_MISMATCH_NUMERIC", "severity": "CRITICAL" }
+                ],
+                "stats" : { "failed": 7, "survived": 1 }
+            };
+            var json = jsonSerialize( sample );
+            var parsed = jsonDeserialize( json );
+            variables.assert.isEqual( "TC-SAMPLE", parsed.id );
+            variables.assert.isEqual( 2, arrayLen( parsed.causes ) );
+            variables.assert.isEqual( 7, parsed.stats.failed );
+
+            variables.reporter.record( id, scenario, "jsonSerialize -> jsonDeserialize", "Estructura deserializada identica a la original", "Roundtrip exitoso sin perdida de datos", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "jsonSerialize -> jsonDeserialize", "Roundtrip exitoso", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testScenarioRegistryCustomRegistration() {
+        var id = "TC-B1-08";
+        var scenario = "ScenarioRegistry: registro dinamico de escenarios y validacion de contratos";
+        var t0 = getTickCount();
+        try {
+            var registry = new models.ScenarioRegistry();
+            variables.assert.isEqual( 8, registry.count() );
+
+            var customScenario = {
+                "id": "S99_CUSTOM_INJECTION",
+                "title": "Escenario dinamico personalizado",
+                "gatewayMode": "timeout",
+                "configMutation": "none",
+                "amount": 250.00,
+                "faultHint": "NUMERIC_CONTENT"
+            };
+            registry.registerScenario( customScenario );
+            variables.assert.isEqual( 9, registry.count() );
+            variables.assert.isTrue( registry.hasScenario( "S99_CUSTOM_INJECTION" ) );
+            var fetched = registry.getScenario( "S99_CUSTOM_INJECTION" );
+            variables.assert.isEqual( "Escenario dinamico personalizado", fetched.title );
+
+            variables.reporter.record( id, scenario, "registry.registerScenario( customScenario )", "Registro dinamico exitoso (count=9)", "Escenario dinamico registrado y consultado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "registerScenario", "Registro exitoso", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

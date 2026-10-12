@@ -1,0 +1,190 @@
+/**
+ * WebDashboardTest - Banco de pruebas para el servidor y dashboard web de FaultGraph-BX.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testInstantiation();
+        testStartAndStopCycle();
+        testEndpointHttpCall();
+        testDashboardAuthentication();
+        testBenchmarkEndpoint();
+        testPrometheusMetricsEndpoint();
+    }
+
+    private void function testInstantiation() {
+        var id = "TC-WD-01";
+        var scenario = "Instanciacion de WebDashboard y configuracion de puerto";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8095 );
+
+            variables.assert.isEqual( 8095, dash.getPort() );
+            variables.assert.isFalse( dash.isRunning() );
+
+            variables.reporter.record( id, scenario, "Instanciacion de WebDashboard", "Puerto 8095 configurado, isRunning=false", "Instancia lista", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Instanciacion WebDashboard", "Puerto 8095", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testStartAndStopCycle() {
+        var id = "TC-WD-02";
+        var scenario = "Ciclo de inicio y detencion limpia del servidor HTTP";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8096 );
+
+            dash.start();
+            variables.assert.isTrue( dash.isRunning(), "El servidor debe estar corriendo tras start()" );
+
+            dash.stop();
+            variables.assert.isFalse( dash.isRunning(), "El servidor debe detenerse tras stop()" );
+
+            variables.reporter.record( id, scenario, "Ciclo start/stop del servidor HTTP", "isRunning conmuta limpiamente", "Servidor iniciado y detenido correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Ciclo start/stop", "Conmutacion limpia", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testEndpointHttpCall() {
+        var id = "TC-WD-03";
+        var scenario = "Respuesta de endpoint JSON /api/status";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8097 );
+            dash.start();
+
+            // Peticion HTTP local
+            var client = createObject( "java", "java.net.http.HttpClient" ).newHttpClient();
+            var reqObj = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8097/api/status" ) )
+                .build();
+            var resp = client.send( reqObj, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+
+            variables.assert.isEqual( 200, resp.statusCode() );
+            var bodyText = resp.body();
+            variables.assert.isTrue( isJson( bodyText ) );
+            var jsonResp = jsonDeserialize( bodyText );
+            variables.assert.isEqual( "2.4.0", jsonResp.version );
+            variables.assert.isEqual( 100, jsonResp.boxlangCodePct );
+
+            dash.stop();
+
+            variables.reporter.record( id, scenario, "Consulta a /api/status", "HTTP 200 con version 2.4.0 y boxlangCodePct=100", "API status verificado exitosamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Consulta /api/status", "HTTP 200", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testDashboardAuthentication() {
+        var id = "TC-WD-04";
+        var scenario = "Seguridad del Dashboard: proteccion por API Key y rechazo de peticiones no autorizadas";
+        var t0 = getTickCount();
+        try {
+            var cfg  = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8098, "secret-token-v1-ready" );
+            dash.start();
+
+            var client = createObject( "java", "java.net.http.HttpClient" ).newHttpClient();
+
+            // 1. Peticion sin credenciales -> debe retornar HTTP 401 Unauthorized
+            var reqUnauth = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8098/api/status" ) )
+                .build();
+            var respUnauth = client.send( reqUnauth, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+            variables.assert.isEqual( 401, respUnauth.statusCode(), "Debe denegar acceso sin credencial (401)" );
+            variables.assert.stringContains( "Unauthorized", respUnauth.body() );
+
+            // 2. Peticion con cabecera X-API-Key valida -> debe retornar HTTP 200 OK
+            var reqAuthHeader = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8098/api/status" ) )
+                .header( "X-API-Key", "secret-token-v1-ready" )
+                .build();
+            var respAuthHeader = client.send( reqAuthHeader, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+            variables.assert.isEqual( 200, respAuthHeader.statusCode(), "Debe permitir acceso con X-API-Key valida (200)" );
+
+            // 3. Peticion con Bearer Token -> debe retornar HTTP 200 OK
+            var reqBearer = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8098/api/auth/verify" ) )
+                .header( "Authorization", "Bearer secret-token-v1-ready" )
+                .build();
+            var respBearer = client.send( reqBearer, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+            variables.assert.isEqual( 200, respBearer.statusCode(), "Debe verificar autenticacion mediante Bearer token (200)" );
+
+            dash.stop();
+
+            variables.reporter.record( id, scenario, "API Key en Dashboard", "401 sin auth, 200 con X-API-Key / Bearer", "Autenticacion y proteccion de endpoints verificada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Dashboard Auth", "401/200 OK", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testBenchmarkEndpoint() {
+        var id = "TC-WD-05";
+        var scenario = "Respuesta de endpoint JSON /api/benchmark con metricas de seguridad";
+        var t0 = getTickCount();
+        try {
+            var cfg  = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8099 );
+            dash.start();
+
+            var client = createObject( "java", "java.net.http.HttpClient" ).newHttpClient();
+            var reqObj = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8099/api/benchmark" ) )
+                .build();
+            var resp = client.send( reqObj, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+
+            variables.assert.isEqual( 200, resp.statusCode(), "Debe retornar 200 OK" );
+            var bodyText = resp.body();
+            variables.assert.isTrue( isJson( bodyText ), "La respuesta debe ser JSON valido" );
+            var jsonResp = jsonDeserialize( bodyText );
+            variables.assert.isTrue( structKeyExists( jsonResp, "fixtures" ) || structKeyExists( jsonResp, "status" ) );
+
+            dash.stop();
+
+            variables.reporter.record( id, scenario, "Consulta /api/benchmark", "HTTP 200 con payload JSON valido", "Endpoint benchmark verificado exitosamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Consulta /api/benchmark", "HTTP 200", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testPrometheusMetricsEndpoint() {
+        var id = "TC-WD-06";
+        var scenario = "Respuesta de endpoint Prometheus /metrics con formato estandar SRE";
+        var t0 = getTickCount();
+        try {
+            var cfg  = new config.Config( variables.rootDir );
+            var dash = new models.WebDashboard( cfg, 8094 );
+            dash.start();
+
+            var client = createObject( "java", "java.net.http.HttpClient" ).newHttpClient();
+            var reqObj = createObject( "java", "java.net.http.HttpRequest" ).newBuilder()
+                .uri( createObject( "java", "java.net.URI" ).create( "http://localhost:8094/metrics" ) )
+                .build();
+            var resp = client.send( reqObj, createObject( "java", "java.net.http.HttpResponse$BodyHandlers" ).ofString() );
+
+            variables.assert.isEqual( 200, resp.statusCode(), "Debe retornar 200 OK para /metrics" );
+            var bodyText = resp.body();
+            variables.assert.isTrue( find( "faultgraph_kb_entries", bodyText ) > 0, "Debe contener metrica faultgraph_kb_entries" );
+            variables.assert.isTrue( find( "faultgraph_boxlang_code_pct", bodyText ) > 0, "Debe contener metrica faultgraph_boxlang_code_pct" );
+
+            dash.stop();
+
+            variables.reporter.record( id, scenario, "Consulta /metrics", "HTTP 200 con metricas Prometheus", "Endpoint Prometheus verificado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Consulta /metrics", "HTTP 200", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

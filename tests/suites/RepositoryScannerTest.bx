@@ -1,0 +1,160 @@
+/**
+ * RepositoryScannerTest - Banco de pruebas para el escaneo de repositorios
+ * y la ingesta y diagnostico de logs externos.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testScannerDetectsVulnerabilitiesInBrokenFile();
+        testScannerConfirmsCleanFile();
+        testScannerBlocksPathTraversal();
+        testLogIngestorExtractsAndDiagnoses();
+        testLogIngestorProducesMermaid();
+        testScannerDetectsExtendedSecurityVulnerabilities();
+    }
+
+    private void function testScannerDetectsVulnerabilitiesInBrokenFile() {
+        var testId = "TC-R1-01";
+        var desc   = "RepositoryScanner detecta desreferencias no protegidas y casteo numerico en PaymentService.bx";
+        var t0 = getTickCount();
+        try {
+            var scanner = new models.RepositoryScanner( variables.config );
+            var target  = variables.rootDir & "target_app/PaymentService.bx";
+            var res     = scanner.scanFile( target, false );
+
+            variables.assert.isTrue( res.ok, "El escaneo debe completarse con exito" );
+            variables.assert.isFalse( res.clean, "PaymentService.bx original NO debe marcarse como limpio" );
+            variables.assert.isTrue( res.issueCount >= 2, "Debe detectar al menos 2 problemas (deref y cast)" );
+            variables.reporter.record( testId, desc, target, "Detectar problemas", "Detectados " & res.issueCount & " problemas", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "scanFile", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testScannerConfirmsCleanFile() {
+        var testId = "TC-R1-02";
+        var desc   = "RepositoryScanner certifica PaymentServicePatched.bx como limpio";
+        var t0 = getTickCount();
+        try {
+            var scanner = new models.RepositoryScanner( variables.config );
+            var target  = variables.rootDir & "target_app/PaymentServicePatched.bx";
+            var res     = scanner.scanFile( target, false );
+
+            variables.assert.isTrue( res.ok, "El escaneo debe completarse con exito" );
+            variables.assert.isTrue( res.clean, "PaymentServicePatched.bx debe ser reportado como limpio" );
+            variables.assert.isEqual( 0, res.issueCount, "No debe contener incidencias" );
+            variables.reporter.record( testId, desc, target, "Archivo limpio", "0 incidencias confirmadas", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "scanFile limpio", "Limpio", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testScannerBlocksPathTraversal() {
+        var testId = "TC-R1-03";
+        var desc   = "RepositoryScanner y SecuritySandbox bloquean rutas con escape ../";
+        var t0 = getTickCount();
+        try {
+            var scanner = new models.RepositoryScanner( variables.config );
+            var escapePath = variables.rootDir & "../etc/passwd";
+            var threw = false;
+            try {
+                scanner.scanDirectory( escapePath, false );
+            } catch ( any se ) {
+                threw = true;
+            }
+            variables.assert.isTrue( threw, "Debe lanzar excepcion de seguridad ante ../" );
+            variables.reporter.record( testId, desc, escapePath, "Lanzar SecurityException", "Bloqueado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "Path traversal", "Bloqueado", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testLogIngestorExtractsAndDiagnoses() {
+        var testId = "TC-R1-04";
+        var desc   = "LogDiagnosticIngestor extrae errores de logs externos y clasifica causas raiz";
+        var t0 = getTickCount();
+        try {
+            var ingestor = new models.LogDiagnosticIngestor( variables.config );
+            var rawLog = "2026-10-10 [ERROR] NullConfig: The key [fallback] was not found in the struct." & char( 10 )
+                & "2026-10-10 [ERROR] NumericCast: BoxCastException: Can't cast [2.5%] to a Number.";
+            var res = ingestor.ingestAndDiagnoseText( rawLog, "TestTrace", false );
+
+            variables.assert.isTrue( res.ok, "La ingesta debe ser exitosa" );
+            variables.assert.isEqual( 2, res.errorsExtracted, "Debe extraer 2 errores" );
+            variables.assert.isTrue( arrayLen( res.diagnosis.causes ) >= 2, "Debe clasificar al menos 2 causas raiz" );
+            variables.reporter.record( testId, desc, "Log con 2 errores", "2 causas diagnosticadas", "Diagnostico correcto", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "Ingesta de log", "Diagnostico", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testLogIngestorProducesMermaid() {
+        var testId = "TC-R1-05";
+        var desc   = "LogDiagnosticIngestor genera el grafo Mermaid de propagacion de fallos";
+        var t0 = getTickCount();
+        try {
+            var ingestor = new models.LogDiagnosticIngestor( variables.config );
+            var rawLog = "2026-10-10 [ERROR] BoxCastException: Can't cast [foo] to a Number.";
+            var res = ingestor.ingestAndDiagnoseText( rawLog, "MermaidTest", false );
+
+            variables.assert.isTrue( res.ok, "Ingesta exitosa" );
+            variables.assert.isTrue( len( res.mermaidGraph ) > 0, "Debe producir grafo Mermaid" );
+            variables.assert.isTrue( find( "flowchart", res.mermaidGraph ) > 0, "Debe contener sintaxis flowchart" );
+            variables.reporter.record( testId, desc, "Log con cast error", "Grafo Mermaid valido", "Grafo generado con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( testId, desc, "Grafo Mermaid", "Generado", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testScannerDetectsExtendedSecurityVulnerabilities() {
+        var testId = "TC-R1-06";
+        var desc   = "RepositoryScanner detecta reglas avanzadas: inyeccion SQL, fuga de recursos y mutacion concurrente";
+        var t0 = getTickCount();
+        var tempFile = variables.rootDir & "scratch/test_vuln_advanced.bx";
+        try {
+            var vulnCode = "class {" & char( 10 )
+                & "    function runVulnerable() {" & char( 10 )
+                & "        var q = queryExecute( 'SELECT * FROM users WHERE id = ' & arguments.id );" & char( 10 )
+                & "        var is = urlConnection.getInputStream();" & char( 10 )
+                & "        application.totalRequests = application.totalRequests + 1;" & char( 10 )
+                & "    }" & char( 10 )
+                & "}" & char( 10 );
+            fileWrite( tempFile, vulnCode );
+
+            var scanner = new models.RepositoryScanner( variables.config );
+            var res     = scanner.scanFile( tempFile, false );
+
+            variables.assert.isTrue( res.ok, "Escaneo debe ser exitoso" );
+            variables.assert.isFalse( res.clean, "Archivo vulnerable no debe ser limpio" );
+
+            var codesFound = [];
+            for ( var iss in res.issues ) {
+                arrayAppend( codesFound, iss.code );
+            }
+
+            variables.assert.isTrue( arrayFind( codesFound, "SQL_INJECTION_RISK" ) > 0, "Debe detectar SQL_INJECTION_RISK" );
+            variables.assert.isTrue( arrayFind( codesFound, "RESOURCE_LEAK_RISK" ) > 0, "Debe detectar RESOURCE_LEAK_RISK" );
+            variables.assert.isTrue( arrayFind( codesFound, "UNSAFE_CONCURRENT_MUTATION" ) > 0, "Debe detectar UNSAFE_CONCURRENT_MUTATION" );
+
+            if ( fileExists( tempFile ) ) {
+                fileDelete( tempFile );
+            }
+
+            variables.reporter.record( testId, desc, "Codigo con SQLi, ResourceLeak y UnsafeConcurrency", "3 reglas avanzadas detectadas", "Reglas extendidas validadas con exito", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempFile ) ) {
+                fileDelete( tempFile );
+            }
+            variables.reporter.record( testId, desc, "Reglas avanzadas", "Deteccion de 3 reglas", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

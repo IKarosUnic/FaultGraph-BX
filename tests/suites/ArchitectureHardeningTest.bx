@@ -1,0 +1,235 @@
+/**
+ * ArchitectureHardeningTest.bx - Banco de pruebas para las mejoras de endurecimiento
+ * arquitectonico, desacoplamiento y concurrencia implementadas durante la auditoria.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testSecuritySandboxOsPathProtection();
+        testCircuitBreakerThreadSafety();
+        testSemanticCacheEviction();
+        testHealerUniversalPatching();
+        testLogDiagnosticIngestorDynamicMermaid();
+        testShadowTesterPolymorphicInvocation();
+    }
+
+    /**
+     * TC-HARD-01: SecuritySandbox bloquea rutas sensibles del SO y valida allowedRoot canonico.
+     */
+    private void function testSecuritySandboxOsPathProtection() {
+        var id = "TC-HARD-01";
+        var scenario = "SecuritySandbox: bloqueo de rutas del sistema operativo y validacion canonica";
+        var t0 = getTickCount();
+        try {
+            var sandbox = new models.SecuritySandbox( variables.config );
+
+            // 1. Bloqueo de rutas de sistema operativo sensibles
+            var blockedEtc = false;
+            try {
+                sandbox.resolveSafePath( "/etc/passwd" );
+            } catch ( any se1 ) {
+                blockedEtc = true;
+            }
+            variables.assert.isTrue( blockedEtc, "Debe bloquear /etc/passwd" );
+
+            var blockedWin = false;
+            try {
+                sandbox.resolveSafePath( "C:/windows/system32/cmd.exe" );
+            } catch ( any se2 ) {
+                blockedWin = true;
+            }
+            variables.assert.isTrue( blockedWin, "Debe bloquear C:/windows/system32/cmd.exe" );
+
+            // 2. Ruta dentro de allowedRoot
+            var safePath = variables.rootDir & "models/Healer.bx";
+            var resolved = sandbox.resolveSafePath( safePath, variables.rootDir );
+            variables.assert.isTrue( len( resolved ) > 0, "Ruta permitida debe resolverse" );
+
+            variables.reporter.record( id, scenario, "Bloqueo OS y allowedRoot", "SecurityException ante accesos no autorizados", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Bloqueo OS", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-HARD-02: CircuitBreaker es thread-safe con ReentrantLock.
+     */
+    private void function testCircuitBreakerThreadSafety() {
+        var id = "TC-HARD-02";
+        var scenario = "CircuitBreaker: thread-safety y proteccion atomica con ReentrantLock";
+        var t0 = getTickCount();
+        try {
+            var cb = new models.resilience.CircuitBreaker( failureThreshold = 5, resetTimeoutMs = 1000, name = "thread-safe-breaker" );
+
+            // Ejecucion repetitiva de llamadas para comprobar integridad de metricas
+            var primary = function() { return "OK"; };
+            var fallback = function( err ) { return "FALLBACK"; };
+
+            for ( var i = 1; i <= 20; i++ ) {
+                cb.execute( primary, fallback );
+            }
+
+            var m = cb.getMetrics();
+            variables.assert.isEqual( 20, m.totalCalls, "Debe registrar exactamente 20 llamadas totales" );
+            variables.assert.isEqual( 20, m.successfulCalls, "Debe registrar 20 llamadas exitosas" );
+            variables.assert.isEqual( "CLOSED", cb.getState(), "El circuito debe permanecer CLOSED" );
+
+            variables.reporter.record( id, scenario, "20 llamadas a CircuitBreaker", "totalCalls=20, successfulCalls=20", "Metricas thread-safe integras", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "CircuitBreaker concurrente", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-HARD-03: SemanticCache capacidad maxima y desalojo seguro sin fugas de memoria.
+     */
+    private void function testSemanticCacheEviction() {
+        var id = "TC-HARD-03";
+        var scenario = "SemanticCache: capacidad maxima configurada y desalojo seguro de memoria";
+        var t0 = getTickCount();
+        try {
+            var cache = new models.SemanticCache( maxCapacity = 100 );
+            variables.assert.isEqual( 100, cache.getMaxCapacity() );
+
+            // Insertar 120 elementos
+            for ( var i = 1; i <= 120; i++ ) {
+                cache.put( "key_" & i, "value_" & i );
+            }
+
+            // La cache no debe exceder de 100 elementos desbordando el heap
+            variables.assert.isTrue( cache.size() <= 100, "El tamanio (" & cache.size() & ") no debe superar maxCapacity (100)" );
+
+            variables.reporter.record( id, scenario, "Insertar 120 items con maxCapacity=100", "size <= 100", "Tamanio contenido: " & cache.size(), "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Eviccion SemanticCache", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-HARD-04: Healer buildUniversalPatch repara archivos sin marcadores @fallback.
+     */
+    private void function testHealerUniversalPatching() {
+        var id = "TC-HARD-04";
+        var scenario = "Healer: sintesis de parche universal sin requerir marcadores @fallback";
+        var t0 = getTickCount();
+        var tempSource = variables.rootDir & "scratch/temp_universal_service.bx";
+        var tempPatch  = variables.rootDir & "scratch/temp_universal_service_patched.bx";
+        try {
+            var healer = new models.Healer( variables.config );
+
+            var rawService = "class {" & char( 10 )
+                & "    function execute( required any config, required any amount ) {" & char( 10 )
+                & "        try {" & char( 10 )
+                & "            return arguments.amount * 1.0;" & char( 10 )
+                & "        } catch ( any ex ) {" & char( 10 )
+                & "            return arguments.config.fallback.rate * arguments.amount;" & char( 10 )
+                & "        }" & char( 10 )
+                & "    }" & char( 10 )
+                & "}";
+            fileWrite( tempSource, rawService );
+
+            var diag = {
+                "patchable": true,
+                "causes": [
+                    { "code": "NULL_CONFIG_DEREF", "patchable": true, "remediation": "Validar config" },
+                    { "code": "TYPE_MISMATCH_NUMERIC", "patchable": true, "remediation": "Normalizar monto" }
+                ]
+            };
+
+            var patchRes = healer.buildUniversalPatch( tempSource, diag, tempPatch );
+
+            variables.assert.isTrue( patchRes.ok, "buildUniversalPatch debe ser exitoso sin @fallback" );
+            variables.assert.isTrue( fileExists( tempPatch ), "El archivo parcheado debe existir" );
+
+            var patchedText = fileRead( tempPatch );
+            variables.assert.isTrue( find( "Guardas defensivas universales", patchedText ) > 0, "Debe contener guardas defensivas" );
+
+            if ( fileExists( tempSource ) ) { fileDelete( tempSource ); }
+            if ( fileExists( tempPatch ) )  { fileDelete( tempPatch ); }
+
+            variables.reporter.record( id, scenario, "buildUniversalPatch en codigo sin @fallback", "Parche generado y verificado", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempSource ) ) { try { fileDelete( tempSource ); } catch ( any ignore1 ) {} }
+            if ( fileExists( tempPatch ) )  { try { fileDelete( tempPatch ); } catch ( any ignore2 ) {} }
+            variables.reporter.record( id, scenario, "buildUniversalPatch", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-HARD-05: LogDiagnosticIngestor contextualiza el diagrama Mermaid segun el componente del log.
+     */
+    private void function testLogDiagnosticIngestorDynamicMermaid() {
+        var id = "TC-HARD-05";
+        var scenario = "LogDiagnosticIngestor: contextualizacion dinamica de diagramas Mermaid";
+        var t0 = getTickCount();
+        try {
+            var ingestor = new models.LogDiagnosticIngestor( variables.config );
+
+            var orderLog = "2026-10-10 [ERROR] OrderService: BoxCastException: Can't cast [foo] to a Number at OrderService.bx:45";
+            var res = ingestor.ingestAndDiagnoseText( orderLog, "OrderLogs.log", false );
+
+            variables.assert.isTrue( res.ok, "Ingesta exitosa" );
+            variables.assert.isTrue( find( "OrderService", res.mermaidGraph ) > 0, "El grafo Mermaid debe reflejar OrderService en lugar de PaymentService" );
+
+            variables.reporter.record( id, scenario, "Log de OrderService", "Mermaid con nodo OrderService", "Mermaid dinamico verificado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Mermaid dinamico", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    /**
+     * TC-HARD-06: ShadowTester soporta servicios polimorficos (charge, execute y closures).
+     */
+    private void function testShadowTesterPolymorphicInvocation() {
+        var id = "TC-HARD-06";
+        var scenario = "ShadowTester: ejecucion polimorfica sobre charge(), execute() y closures";
+        var t0 = getTickCount();
+        try {
+            var st = new models.ShadowTester( variables.config );
+
+            // Servicio con metodo charge()
+            var origWithCharge = {
+                "charge": function( orderId, amount, currency ) {
+                    if ( isSimpleValue( amount ) && find( "$", amount ) > 0 ) {
+                        throw( type="BoxCastException", message="Monto no casteable" );
+                    }
+                    return { "status": "APPROVED" };
+                }
+            };
+            var candWithCharge = {
+                "charge": function( orderId, amount, currency ) {
+                    return { "status": "APPROVED", "cleanAmount": val( replace( toString( amount ), "$", "", "all" ) ) };
+                }
+            };
+
+            var evalCharge = st.evaluateShadowRun( origWithCharge, candWithCharge );
+            variables.assert.isTrue( evalCharge.safeToDeploy, "Candidato con charge() debe aprobar despliegue" );
+            variables.assert.isEqual( "APPROVED_FOR_RELEASE", evalCharge.decision );
+
+            // Servicio como closure puro
+            var origClosure = function( payload ) {
+                if ( structKeyExists( payload, "channel" ) && payload.channel == "FALLBACK" ) {
+                    throw( type="Crash", message="Fallo closure" );
+                }
+                return { "status": "OK" };
+            };
+            var candClosure = function( payload ) { return { "status": "OK" }; };
+
+            var evalClosure = st.evaluateShadowRun( origClosure, candClosure );
+            variables.assert.isTrue( evalClosure.safeToDeploy, "Candidato como closure debe aprobar despliegue" );
+
+            variables.reporter.record( id, scenario, "evaluateShadowRun con charge() y closures", "Polimorfismo exitoso", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "ShadowTester polimorfico", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

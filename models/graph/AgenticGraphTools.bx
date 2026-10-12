@@ -1,0 +1,152 @@
+/**
+ * AgenticGraphTools.bx - Herramientas Interactivas de Grafo para la Flota de IA Local.
+ *
+ * Mision:
+ *   Provee una interfaz formal de "Tool-Calling" para que los modelos locales
+ *   (Qwen2.5-Coder 3B/7B y DeepSeek-R1) naveguen activamente por el repositorio
+ *   a traves del grafo con total fluidez y control sin saturar sus contextos:
+ *     - inspect_node      : Inspecciona definicion, lineas y metadatos de un componente.
+ *     - get_neighbors     : Consulta llamantes (callers) o dependencias (callees).
+ *     - find_path         : Descubre la ruta causal entre dos nodos cualesquiera.
+ *     - check_blast_radius: Proyecta el impacto de cambiar o romper una funcion.
+ *     - list_zone_nodes   : Muestra componentes agrupados por su zona funcional.
+ *     - trace_upstream    : Rastrea el origen de entrada de un fallo hacia atras.
+ *     - find_spofs        : Detecta dependencias externas criticas sin proteccion.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    property name="navigator" type="any";
+
+    public any function init( any navigator = null ) {
+        variables.navigator = structKeyExists( arguments, "navigator" ) && !isNull( arguments.navigator )
+            ? arguments.navigator
+            : new models.graph.GraphNavigator();
+        return this;
+    }
+
+    public any function getNavigator() {
+        return variables.navigator;
+    }
+
+    /**
+     * Retorna el manifiesto formal de herramientas disponibles para los modelos de IA.
+     */
+    public array function getToolManifest() {
+        return [
+            {
+                "name"        : "inspect_node",
+                "description" : "Inspecciona un nodo especifico del grafo para obtener su zona, archivo, lineas y metadatos.",
+                "parameters"  : {
+                    "nodeId"  : { "type": "string", "description": "Identificador exacto del nodo", "required": true }
+                }
+            },
+            {
+                "name"        : "get_neighbors",
+                "description" : "Obtiene los nodos adyacentes a un componente. Permite consultar quien lo llama (IN) o a quien llama (OUT).",
+                "parameters"  : {
+                    "nodeId"    : { "type": "string", "description": "Nodo objetivo", "required": true },
+                    "direction" : { "type": "string", "description": "Direccion: IN, OUT o ALL", "default": "ALL" }
+                }
+            },
+            {
+                "name"        : "find_path",
+                "description" : "Encuentra la ruta topologica paso a paso entre un punto de entrada y un fallo o destino.",
+                "parameters"  : {
+                    "sourceId" : { "type": "string", "description": "Nodo de origen", "required": true },
+                    "targetId" : { "type": "string", "description": "Nodo de destino", "required": true }
+                }
+            },
+            {
+                "name"        : "check_blast_radius",
+                "description" : "Calcula el radio de explosion y los componentes que se romperan si se altera o falla este nodo.",
+                "parameters"  : {
+                    "nodeId"  : { "type": "string", "description": "Nodo a evaluar", "required": true },
+                    "maxHops" : { "type": "numeric", "description": "Profundidad maxima de saltos", "default": 2 }
+                }
+            },
+            {
+                "name"        : "list_zone_nodes",
+                "description" : "Lista los componentes de una zona funcional (ZONE_0_ENTRY, ZONE_1_DOMAIN, ZONE_2_SPOF_EXTERNAL, ZONE_3_RESILIENCE).",
+                "parameters"  : {
+                    "zone"    : { "type": "string", "description": "Nombre de la zona", "required": true }
+                }
+            },
+            {
+                "name"        : "trace_upstream",
+                "description" : "Rastrea hacia atras la cadena de procedencia desde un punto de error hasta el punto de entrada que origino los datos.",
+                "parameters"  : {
+                    "nodeId"  : { "type": "string", "description": "Nodo de fallo", "required": true }
+                }
+            },
+            {
+                "name"        : "find_spofs",
+                "description" : "Encuentra puntos unicos de fallo externos sin red de contingencia (fallbacks).",
+                "parameters"  : {}
+            }
+        ];
+    }
+
+    /**
+     * Ejecuta dinamicamente una herramienta invocada por el modelo de IA o el orquestador.
+     */
+    public struct function executeTool( required string toolName, struct params = {} ) {
+        var tName = lCase( trim( arguments.toolName ) );
+        var graph = variables.navigator.getGraph();
+
+        try {
+            if ( tName == "inspect_node" ) {
+                var targetId = structKeyExists( arguments.params, "nodeId" ) ? arguments.params.nodeId : "";
+                var nData = graph.getNode( targetId );
+                if ( structCount( nData ) == 0 ) {
+                    return { "ok": false, "error": "Nodo no encontrado: " & targetId };
+                }
+                return { "ok": true, "tool": tName, "result": nData };
+            }
+
+            if ( tName == "get_neighbors" ) {
+                var nid = structKeyExists( arguments.params, "nodeId" ) ? arguments.params.nodeId : "";
+                var dir = structKeyExists( arguments.params, "direction" ) ? arguments.params.direction : "ALL";
+                var nbs = graph.getNeighbors( nid, dir );
+                return { "ok": true, "tool": tName, "nodeId": nid, "count": arrayLen( nbs ), "result": nbs };
+            }
+
+            if ( tName == "find_path" ) {
+                var src = structKeyExists( arguments.params, "sourceId" ) ? arguments.params.sourceId : "";
+                var tgt = structKeyExists( arguments.params, "targetId" ) ? arguments.params.targetId : "";
+                var pathRes = variables.navigator.findShortestPath( src, tgt );
+                return { "ok": true, "tool": tName, "result": pathRes };
+            }
+
+            if ( tName == "check_blast_radius" ) {
+                var rId = structKeyExists( arguments.params, "nodeId" ) ? arguments.params.nodeId : "";
+                var hops = structKeyExists( arguments.params, "maxHops" ) ? val( arguments.params.maxHops ) : 2;
+                var blast = variables.navigator.calculateBlastRadius( rId, hops );
+                return { "ok": true, "tool": tName, "result": blast };
+            }
+
+            if ( tName == "list_zone_nodes" ) {
+                var zName = structKeyExists( arguments.params, "zone" ) ? arguments.params.zone : "ZONE_0_ENTRY";
+                var zNodes = variables.navigator.getNodesInZone( zName );
+                return { "ok": true, "tool": tName, "zone": zName, "count": arrayLen( zNodes ), "result": zNodes };
+            }
+
+            if ( tName == "trace_upstream" ) {
+                var fId = structKeyExists( arguments.params, "nodeId" ) ? arguments.params.nodeId : "";
+                var upTrace = variables.navigator.traceUpstreamOrigin( fId );
+                return { "ok": true, "tool": tName, "result": upTrace };
+            }
+
+            if ( tName == "find_spofs" ) {
+                var spofs = variables.navigator.findUnshieldedSPOFs();
+                return { "ok": true, "tool": tName, "count": arrayLen( spofs ), "result": spofs };
+            }
+
+            return { "ok": false, "error": "Herramienta desconocida: " & arguments.toolName };
+        } catch ( any e ) {
+            return { "ok": false, "error": e.message, "tool": tName };
+        }
+    }
+
+}

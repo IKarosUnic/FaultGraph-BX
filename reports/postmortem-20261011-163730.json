@@ -1,0 +1,143 @@
+{
+  "metadata" : {
+    "title" : "Fallo Latente en Ruta de Fallback ante Caida de Gateway",
+    "generatedAt" : "2026-10-11 16:37:30",
+    "incidentId" : "INC-20261011-163730",
+    "severity" : "CRITICAL",
+    "environment" : "Production",
+    "leadEngineer" : "FaultGraph-BX Autonomous Director",
+    "service" : "PaymentService",
+    "status" : "RESOLVED"
+  },
+  "fiveWhys" : [ {
+    "question" : "Primer Por que (Efecto Inmediato)",
+    "level" : 1,
+    "answer" : "¿Por que fallaron las ordenes en produccion? -> El gateway externo cayo y la rutina de contingencia fallbackCharge() arrojo un error 500 no capturado."
+  }, {
+    "question" : "Segundo Por que (Error de Runtime)",
+    "level" : 2,
+    "answer" : "¿Por que arrojo error la rutina de fallback? -> Se produjo una excepcion de ejecucion (BoxCastException / NullPointer) al intentar computar el recargo de procesamiento offline."
+  }, {
+    "question" : "Tercer Por que (Causa Inmediata)",
+    "level" : 3,
+    "answer" : "¿Por que fallo el computo del recargo? -> Se intento realizar aritmetica ('amount * surchargePct') sobre un valor configurado como String ('2.5%') sin normalizacion numerica previa."
+  }, {
+    "question" : "Cuarto Por que (Falta de Guardas)",
+    "level" : 4,
+    "answer" : "¿Por que la clave de configuracion tenia un formato no sanitizado? -> La configuracion externa del entorno carecia de tipado estricto y el servicio asumio una estructura perfecta sin operadores de navegacion segura ni coalescencia nula."
+  }, {
+    "question" : "Quinto Por que (Causa Raiz Sistemica)",
+    "level" : 5,
+    "answer" : "¿Por que este defecto permanecio inadvertido hasta produccion? -> El camino de codigo de contingencia casi nunca se ejecuta en desarrollo local y carecia de una bateria automatizada de ingenieria de caos en el pipeline de CI."
+  } ],
+  "mttr" : {
+    "humanReadable" : "2.886 segundos",
+    "ttpMs" : 1154,
+    "ttcMs" : 289,
+    "ttdMs" : 433,
+    "ttiMs" : 1010,
+    "totalDurationMs" : 2886
+  },
+  "adversaryEmulation" : {
+    "totalHypotheses" : 2,
+    "disproved" : 2,
+    "confirmed" : 0,
+    "durationMs" : 312,
+    "results" : [ {
+      "attackVector" : "Config Tampering / Missing Property Injection",
+      "observedError" : "",
+      "defended" : true,
+      "durationMs" : 156,
+      "reproduced" : false,
+      "rationale" : "El servicio aplico validacion defensiva (QUEUED_OFFLINE); la hipotesis de caida queda refutada.",
+      "hypothesisId" : "HYP-NULL_CONFIG_DEREF-3558193cd9818af7fe4d2c2f5bd9d00f",
+      "status" : "DISPROVED"
+    }, {
+      "attackVector" : "Unsanitized Numeric Input Manipulation",
+      "observedError" : "",
+      "defended" : true,
+      "durationMs" : 156,
+      "reproduced" : false,
+      "rationale" : "El servicio aplico validacion defensiva (QUEUED_OFFLINE); la hipotesis de caida queda refutada.",
+      "hypothesisId" : "HYP-TYPE_MISMATCH_NUMERIC-3558193cd9818af7fe4d2c2f5bd9d00f",
+      "status" : "DISPROVED"
+    } ],
+    "inconclusive" : 0
+  },
+  "impactAssessment" : {
+    "slaTarget" : "99.99% Disponibilidad",
+    "userImpact" : "Riesgo de denegacion de servicio en cobros offline durante caidas del procesador.",
+    "ordersAtRisk" : "100% de las transacciones encoladas en fallback.",
+    "downtimeAvoided" : "Mitigacion autonoma en sub-segundos con 0 intervencion manual requerida."
+  },
+  "gitOps" : {
+    "prTitle" : "[FIX] Hardened fallback resilience against null dereference & numeric mismatch (INC-20261011-163730)",
+    "branchName" : "fix/incident-zero-20261011-163730",
+    "commitMessage" : "fix(payment): harden fallback against null dereference and type mismatch (INC-20261011-163730)",
+    "prBody" : "## 🛡️ SRE Autonomous Pull Request\n\n**Incident ID:** `INC-20261011-163730`  \n**Resolved by:** FaultGraph-BX Autonomous Self-Healing  \n**Chaos Verification:** 8/8 Scenarios Survived (100%)  \n\n### 🎯 Root Cause Summary\n- NULL_CONFIG_DEREF: Safe navigation and default fallback parameters injected.\n- TYPE_MISMATCH_NUMERIC: Sanitized string percentage parsing ('2.5%' -> 0.025).\n\n### 🔬 Chaos Engineering Evidence\n| Chaos Metric | Baseline | Hardened Patch |\n| :--- | :---: | :---: |\n| Survival Rate | 1 / 8 (12.5%) | **8 / 8 (100%)** |\n| Adversary Hypotheses Disproved | 0 / 2 | **2 / 2 (100%)** |\n| Residual Vulnerabilities | 2 Critical | **0 Residual** |\n\n### ✅ Verification Checklist\n- [x] Static AST inspection clean.\n- [x] 8 controlled chaos perturbations passed.\n- [x] Synthesized TestBox regression test added.\n- [x] Canary observation window verified with 0 error budget breaches."
+  },
+  "chaosMetrics" : {
+    "afterSurvival" : "8/8",
+    "beforeSurvival" : "1/8",
+    "improvement" : "700% incremento en resiliencia bajo perturbaciones controladas"
+  },
+  "actionItems" : [ {
+    "action" : "Endurecer de forma permanente la rutina de contingencia con coerciones numericas seguras y valores por defecto.",
+    "owner" : "Core Engineering",
+    "priority" : "P0",
+    "category" : "Mitigate"
+  }, {
+    "action" : "Integrar el analizador AST de FaultGraph-BX y exportador SARIF en GitHub Actions para bloquear PRs con fallbacks inseguros.",
+    "owner" : "DevOps / SecOps",
+    "priority" : "P0",
+    "category" : "Prevent"
+  }, {
+    "action" : "Configurar alertas tempranas con WebhookNotifier (Slack/Teams) ante cualquier desvio de tasa de fallos en colas de contingencia.",
+    "owner" : "SRE Team",
+    "priority" : "P1",
+    "category" : "Detect"
+  }, {
+    "action" : "Establecer Game Days mensuales de Chaos Engineering para simular caidas imprevistas de pasarelas de pago externas.",
+    "owner" : "QA & SRE Team",
+    "priority" : "P1",
+    "category" : "Prevent"
+  }, {
+    "action" : "Actualizar la documentacion de arquitectura para exigir que cualquier servicio con fallback cuente con pruebas de mutacion automatizadas.",
+    "owner" : "Architecture Guild",
+    "priority" : "P2",
+    "category" : "Process"
+  } ],
+  "timeline" : [ {
+    "description" : "Falla del gateway externo; el centinela reactivo detecta excepcion 500 en logs.",
+    "phase" : "T0 - Deteccion",
+    "status" : "TRIGGERED"
+  }, {
+    "description" : "El Circuit Breaker aisla el servicio primario y conmuta al canal degradado.",
+    "phase" : "T1 - Aislamiento",
+    "status" : "CONTAINED"
+  }, {
+    "description" : "Inspeccion AST de PaymentService.bx identifica 2 vulnerabilidades latentes.",
+    "phase" : "T2 - Analisis Estatico AST",
+    "status" : "ANALYZED"
+  }, {
+    "description" : "Inferencia de causas raiz (NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC) y validacion con Abogado del Diablo.",
+    "phase" : "T3 - Evaluacion Causal",
+    "status" : "DIAGNOSED"
+  }, {
+    "description" : "Generacion autonoma del fallback endurecido con operador Elvis y saneamiento numerico.",
+    "phase" : "T4 - Sintesis de Parche",
+    "status" : "PATCHED"
+  }, {
+    "description" : "Bateria de 8 escenarios de caos re-ejecutada; 8/8 sobreviven (100% exito).",
+    "phase" : "T5 - Verificacion Bajo Caos",
+    "status" : "VERIFIED"
+  }, {
+    "description" : "Observacion Canary con verificacion de presupuesto de error y soporte de Auto-Rollback.",
+    "phase" : "T6 - Despliegue Canary",
+    "status" : "CANARY_OK"
+  }, {
+    "description" : "Cierre del incidente, emision de SRE Post-Mortem y paquete GitOps PR.",
+    "phase" : "T7 - Resolucion Definitiva",
+    "status" : "RESOLVED"
+  } ]
+}

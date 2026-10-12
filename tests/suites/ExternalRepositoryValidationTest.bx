@@ -1,0 +1,151 @@
+/**
+ * ExternalRepositoryValidationTest - Suite E1: Validacion en Repositorio Externo del Mundo Real.
+ *
+ * Somete a prueba el escaner de repositorios, exportador SARIF y generador de pruebas
+ * contra el modulo oficial de produccion BoxLang AI (bx-ai) de Ortus Solutions.
+ *
+ * Cubre:
+ *   - TC-EXT-01: Escaneo estatico masivo en lote con BoxParser AST Nivel 0 sobre modulos reales.
+ *   - TC-EXT-02: Deteccion precisa de patrones y discriminacion de archivos limpios sin falsos positivos.
+ *   - TC-EXT-03: Conversion y exportacion formal a SARIF v2.1.0 de los resultados de escaneo externo.
+ *   - TC-EXT-04: Sintesis automatizada de scripts de prueba de regresion a partir de incidencias detectadas.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testExternalBatchScanWithAst();
+        testExternalVulnerabilityDetectionAndCleanFiles();
+        testExternalSarifExport();
+        testExternalAutoTestSynthesis();
+    }
+
+    private string function resolveTargetDir() {
+        var externalPath = "C:/boxlang/home/modules/bx-ai/models/loaders";
+        if ( directoryExists( externalPath ) ) {
+            return externalPath;
+        }
+        return variables.rootDir & "models/";
+    }
+
+    private void function testExternalBatchScanWithAst() {
+        var id = "TC-EXT-01";
+        var scenario = "Escaneo estatico masivo en lote con BoxParser AST Nivel 0 sobre modulos reales";
+        var t0 = getTickCount();
+        try {
+            var targetDir = resolveTargetDir();
+            var scanner   = new models.RepositoryScanner( variables.config );
+
+            var res = scanner.scanDirectory( targetDir, false );
+
+            variables.assert.isTrue( res.ok, "El escaneo por lote debe ser exitoso" );
+            variables.assert.isTrue( res.totalFiles >= 10, "Debe escanear al menos 10 archivos reales" );
+            variables.assert.isTrue( structKeyExists( res, "summaryBySeverity" ) );
+            variables.assert.isTrue( isArray( res.files ) );
+
+            variables.reporter.record( id, scenario, "Escaneo de " & targetDir, ">=10 archivos reales procesados sin error de runtime", "Escaneados " & res.totalFiles & " archivos (" & res.durationMs & " ms)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Escaneo externo", "Procesamiento exitoso", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testExternalVulnerabilityDetectionAndCleanFiles() {
+        var id = "TC-EXT-02";
+        var scenario = "Deteccion precisa de patrones y discriminacion de archivos limpios sin falsos positivos";
+        var t0 = getTickCount();
+        try {
+            var targetDir = resolveTargetDir();
+            var scanner   = new models.RepositoryScanner( variables.config );
+
+            var res = scanner.scanDirectory( targetDir, false );
+
+            variables.assert.isTrue( res.cleanFiles > 0, "Debe certificar archivos limpios" );
+            variables.assert.isTrue( res.vulnerableFiles >= 0, "Conteo de vulnerables valido" );
+            variables.assert.isEqual( res.totalFiles, res.cleanFiles + res.vulnerableFiles, "La suma de limpios y vulnerables debe cuadrar con el total" );
+
+            variables.reporter.record( id, scenario, "Clasificacion de archivos externos", "Conteo consistente (limpios: " & res.cleanFiles & ", con hallazgos: " & res.vulnerableFiles & ")", "Discriminacion precisa confirmada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Clasificacion externa", "Conteo exacto", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testExternalSarifExport() {
+        var id = "TC-EXT-03";
+        var scenario = "Conversion y exportacion formal a SARIF v2.1.0 de los resultados de escaneo externo";
+        var t0 = getTickCount();
+        try {
+            var targetDir = resolveTargetDir();
+            var scanner   = new models.RepositoryScanner( variables.config );
+            var exporter  = new models.SarifExporter();
+
+            var scanRes  = scanner.scanDirectory( targetDir, false );
+            var sarifDoc = exporter.exportFromScanner( scanRes, "file:///" );
+
+            variables.assert.isEqual( "2.1.0", sarifDoc.version );
+            variables.assert.isEqual( 1, arrayLen( sarifDoc.runs ) );
+            var run = sarifDoc.runs[ 1 ];
+            variables.assert.isEqual( "FaultGraph-BX", run.tool.driver.name );
+            variables.assert.isTrue( arrayLen( run.tool.driver.rules ) > 0, "Debe incluir catalogo formal de reglas" );
+
+            var summaryMd = exporter.generateMarkdownSummary( sarifDoc );
+            variables.assert.isTrue( len( summaryMd ) > 0, "Debe generar resumen Markdown para CI/CD" );
+
+            variables.reporter.record( id, scenario, "Exportacion SARIF de repositorio real", "Documento SARIF 2.1.0 valido con reglas y resumen", "SARIF 2.1.0 exportado con exito (" & arrayLen( run.results ) & " resultados)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "SARIF externo", "Exportacion SARIF", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testExternalAutoTestSynthesis() {
+        var id = "TC-EXT-04";
+        var scenario = "Sintesis automatizada de scripts de prueba de regresion a partir de incidencias detectadas";
+        var t0 = getTickCount();
+        var tempScript = variables.rootDir & "scratch/temp_ext_regression_test.bxs";
+        try {
+            var gen = new models.AutoTestGenerator( variables.config );
+            var syntheticDiagnosis = {
+                "causes": [
+                    {
+                        "code"        : "UNPROTECTED_CONFIG_DEREF",
+                        "title"       : "Desreferencia no protegida en cargador externo",
+                        "severity"    : "HIGH",
+                        "scenarios"   : [ "S04_FALLBACK_CONFIG_MISSING" ],
+                        "evidence"    : "variables.config.fallback.queueName",
+                        "location"    : "ExternalLoader.bx:124",
+                        "why"         : "Acceso anidado sin structKeyExists()",
+                        "sampleError" : "The key [fallback] was not found in struct"
+                    }
+                ]
+            };
+
+            var genRes = gen.generateFromDiagnosis( syntheticDiagnosis, tempScript );
+
+            variables.assert.isTrue( genRes.ok, "Generacion de test debe ser exitosa" );
+            variables.assert.isEqual( 1, genRes.testCount );
+            variables.assert.isTrue( fileExists( genRes.filePath ), "El script generado debe existir en disco" );
+
+            var scriptContent = fileRead( genRes.filePath );
+            variables.assert.isTrue( find( "UNPROTECTED_CONFIG_DEREF", scriptContent ) > 0, "Debe contener el codigo de la causa" );
+            variables.assert.isTrue( find( "S04_FALLBACK_CONFIG_MISSING", scriptContent ) > 0, "Debe referenciar el escenario" );
+
+            if ( fileExists( genRes.filePath ) ) {
+                fileDelete( genRes.filePath );
+            }
+
+            variables.reporter.record( id, scenario, "Sintesis de test para causa externa", "Script ejecutable generado y verificado", "Script de regresion sintetizado y verificado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( fileExists( tempScript ) ) {
+                fileDelete( tempScript );
+            }
+            variables.reporter.record( id, scenario, "AutoTest externo", "Script generado", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

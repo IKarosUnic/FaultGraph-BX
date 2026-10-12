@@ -1,0 +1,8 @@
+/**
+ * Clean Example: Plain utility service with safe methods
+ */
+class {
+    function getGreeting( required string name ) {
+        return "Hello, " & arguments.name;
+    }
+}

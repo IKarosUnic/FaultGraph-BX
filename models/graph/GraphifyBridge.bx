@@ -1,0 +1,150 @@
+/**
+ * GraphifyBridge - Adaptador y Puente de Integracion entre FaultGraph-BX y Graphify.
+ *
+ * Mision:
+ *   1. Verifica la disponibilidad del ejecutable de Python y la libreria graphify.
+ *   2. Orquesta la extraccion de mapa estructural mediante Graphify (modo --code-only para determinismo).
+ *   3. Importa el archivo graphify-out/graph.json generado al StructuralKnowledgeGraph nativo.
+ *   4. Provee una interfaz de consulta rapida (graphify query) y degradacion elegante cuando
+ *      la llamada de subproceso no esta disponible o se opera en entorno restringido.
+ */
+class {
+
+    public any function init( any config = null, any structuralGraph = null ) {
+        variables.config = structKeyExists( arguments, "config" ) && !isNull( arguments.config ) ? arguments.config : new config.Config( getCurrentTemplatePath() );
+        variables.graph  = structKeyExists( arguments, "structuralGraph" ) && !isNull( arguments.structuralGraph ) ? arguments.structuralGraph : new models.graph.StructuralKnowledgeGraph( variables.config );
+        variables.pythonPath = "python";
+        variables.isGraphifyInstalled = false;
+        checkGraphifyInstallation();
+        return this;
+    }
+
+    public any function getStructuralGraph() {
+        return variables.graph;
+    }
+
+    public boolean function isAvailable() {
+        return variables.isGraphifyInstalled;
+    }
+
+    /**
+     * Verifica la presencia de Python y graphify en el entorno.
+     */
+    public boolean function checkGraphifyInstallation() {
+        try {
+            var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+            var proc = rt.exec( [ "python", "-c", "import graphify; print('OK')" ] );
+            try {
+                proc.getInputStream().readAllBytes();
+                proc.getErrorStream().readAllBytes();
+            } catch ( any ignoreStream ) {}
+            var exitCode = proc.waitFor();
+            variables.isGraphifyInstalled = ( exitCode == 0 );
+        } catch ( any e ) {
+            variables.isGraphifyInstalled = false;
+        }
+        return variables.isGraphifyInstalled;
+    }
+
+    /**
+     * Ejecuta la extraccion de Graphify sobre la ruta del proyecto y la integra en el grafo.
+     *
+     * @targetPath Directorio objetivo
+     * @codeOnly   Si es true, ejecuta AST determinista sin costo de API
+     */
+    public struct function extractAndIngest( required string targetPath, boolean codeOnly = true ) {
+        var t0 = getTickCount();
+        var safePath = replace( arguments.targetPath, "\", "/", "all" );
+        var outDir = safePath & "/graphify-out";
+        var graphJsonPath = outDir & "/graph.json";
+
+        // Si ya existe graph.json reciente o no se puede invocar CLI externo, cargar directamente
+        if ( fileExists( graphJsonPath ) ) {
+            var ingestRes = variables.graph.ingestFromGraphifyJson( graphJsonPath );
+            return {
+                "ok"          : true,
+                "cached"      : true,
+                "source"      : graphJsonPath,
+                "durationMs"  : getTickCount() - t0,
+                "nodesLoaded" : ingestRes.nodesAdded,
+                "edgesLoaded" : ingestRes.edgesAdded
+            };
+        }
+
+        if ( !variables.isGraphifyInstalled ) {
+            // Si graphify no puede ejecutarse como subproceso, construir grafo estructural nativo BoxLang
+            var nativeRes = variables.graph.buildFromProject( safePath );
+            return {
+                "ok"          : true,
+                "cached"      : false,
+                "source"      : "Native BoxLang Structural Extractor (Fallback)",
+                "durationMs"  : getTickCount() - t0,
+                "nodesLoaded" : nativeRes.nodeCount,
+                "edgesLoaded" : nativeRes.edgeCount
+            };
+        }
+
+        try {
+            var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+            var cmd = [ "python", "-m", "graphify", "extract", safePath, "--code-only" ];
+            var proc = rt.exec( cmd );
+            try {
+                proc.getInputStream().readAllBytes();
+                proc.getErrorStream().readAllBytes();
+            } catch ( any ignoreStream ) {}
+            var exitCode = proc.waitFor();
+
+            if ( exitCode == 0 && fileExists( graphJsonPath ) ) {
+                var ingestRes2 = variables.graph.ingestFromGraphifyJson( graphJsonPath );
+                return {
+                    "ok"          : true,
+                    "cached"      : false,
+                    "source"      : "Graphify CLI Pipeline",
+                    "durationMs"  : getTickCount() - t0,
+                    "nodesLoaded" : ingestRes2.nodesAdded,
+                    "edgesLoaded" : ingestRes2.edgesAdded
+                };
+            }
+        } catch ( any e ) {
+            // Ignorar y degradar al analizador nativo
+        }
+
+        // Degradacion limpia a analizador nativo
+        var fallbackRes = variables.graph.buildFromProject( safePath );
+        return {
+            "ok"          : true,
+            "cached"      : false,
+            "source"      : "Native BoxLang Fallback",
+            "durationMs"  : getTickCount() - t0,
+            "nodesLoaded" : fallbackRes.nodeCount,
+            "edgesLoaded" : fallbackRes.edgeCount
+        };
+    }
+
+    /**
+     * Consulta el grafo de conocimiento utilizando traversal BFS/DFS sobre nodos.
+     */
+    public array function queryGraph( required string conceptOrTerm, numeric limit = 5 ) {
+        var results = [];
+        var nodes = variables.graph.getNodes();
+        var term = lCase( trim( arguments.conceptOrTerm ) );
+
+        for ( var k in nodes ) {
+            var n = nodes[ k ];
+            if ( findNoCase( term, n.id ) || findNoCase( term, n.label ) || findNoCase( term, n.type ) ) {
+                var neighbors = variables.graph.getNeighbors( n.id, "ALL" );
+                arrayAppend( results, {
+                    "node"      : n,
+                    "neighbors" : neighbors,
+                    "relevance" : 1.0
+                } );
+                if ( arrayLen( results ) >= arguments.limit ) {
+                    break;
+                }
+            }
+        }
+
+        return results;
+    }
+
+}

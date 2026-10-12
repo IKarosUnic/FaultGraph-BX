@@ -1,0 +1,85 @@
+/**
+ * intake.bxs - CLI de Ingesta e Incorporacion Inteligente de Repositorios para FaultGraph-BX.
+ *
+ * Uso:
+ *   boxlang intake.bxs
+ *   boxlang intake.bxs target_app/
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+cfg = new config.Config( rootDir );
+intake = new models.intake.RepositoryIntake( cfg );
+
+targetDir = rootDir;
+if ( structKeyExists( variables, "args" ) && isArray( variables.args ) && arrayLen( variables.args ) > 0 ) {
+    targetDir = variables.args[ 1 ];
+    if ( !reFind( "^([a-zA-Z]:|[\\/])", targetDir ) ) {
+        targetDir = rootDir & targetDir;
+    }
+}
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: INGESTA INTELIGENTE DE REPOSITORIO  " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Objetivo     : " & targetDir );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+res = intake.onboardRepository( targetDir );
+
+if ( !res.ok ) {
+    println( "[ERROR] " & res.error );
+    abort;
+}
+
+println( "--- 1. CENSO MULTILINGUE Y ECOSISTEMAS ---" );
+println( "Lenguaje Primario     : " & res.census.primaryLanguage );
+println( "Proyecto Poliglota    : " & ( res.census.isMultiLanguage ? "SI" : "NO" ) );
+println( "Total Archivos Codigo : " & res.census.totalFiles );
+println( "Total Lineas Codigo   : " & res.census.totalLines );
+println( "" );
+
+println( "--- 2. MANIFIESTOS Y DEPENDENCIAS ---" );
+for ( mKey in res.manifests ) {
+    m = res.manifests[ mKey ];
+    if ( m.found ) {
+        println( "  [" & uCase( mKey ) & "] Archivo: " & m.file & " | Nombre: " & ( structKeyExists( m, "name" ) ? m.name : "N/A" ) & " | Version: " & ( structKeyExists( m, "version" ) ? m.version : "N/A" ) );
+    }
+}
+println( "" );
+
+println( "--- 3. PUNTOS DE ENTRADA Y PROCEDIMIENTOS ---" );
+for ( ep in res.structure.entryPoints ) {
+    println( "  -> Punto de Entrada : " & ep.path & " (" & ep.type & ")" );
+}
+println( "Procedimientos detectados:" );
+println( "  Build : " & arrayLen( res.procedures.build ) & " comandos" );
+println( "  Run   : " & arrayLen( res.procedures.run ) & " comandos" );
+println( "  Test  : " & arrayLen( res.procedures.test ) & " comandos" );
+println( "" );
+
+println( "--- 4. PUNTOS CRITICOS Y CONTRATOS (SPOFs) ---" );
+for ( cp in res.criticalPoints ) {
+    println( "  [!] " & cp.severity & " | " & cp.type & " -> " & cp.component );
+    println( "      " & cp.risk );
+}
+println( "" );
+
+println( "--- 5. ADVERTENCIA DE SEGURIDAD ---" );
+println( "  " & res.untrustedDataWarning );
+println( "============================================================" );
+
+// Guardar reporte formal en reports/
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "repository-intake-report.json";
+fileWrite( outputPath, jsonSerialize( res ) );
+println( "Reporte de ingesta guardado en: " & outputPath );
+println( "" );

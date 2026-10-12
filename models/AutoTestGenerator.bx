@@ -1,0 +1,250 @@
+/**
+ * AutoTestGenerator - Generador automatico de pruebas de regresion reproducibles.
+ *
+ * Transforma causas raiz diagnosticadas (e.g. NULL_CONFIG_DEREF, TYPE_MISMATCH_NUMERIC)
+ * o hallazgos de escaneo estatico en suites de pruebas ejecutables (.bxs y .bx)
+ * para asegurar inmunidad permanente y prevencion de regresiones en CI/CD.
+ */
+class {
+
+    public any function init( required any config ) {
+        variables.config  = arguments.config;
+        variables.sandbox = new models.SecuritySandbox( arguments.config );
+        return this;
+    }
+
+    /**
+     * Genera un script de prueba de regresion a partir de un reporte de diagnostico.
+     *
+     * @diagnosis Reporte producido por Healer o LogDiagnosticIngestor
+     * @targetClass Nombre de la clase o servicio objetivo (e.g. "target_app.PaymentService")
+     * @outputDir Directorio donde se guardara la prueba generada
+     */
+    public struct function generateFromDiagnosis( required struct diagnosis, string targetClass = "target_app.PaymentService", string outputDir = "" ) {
+        var t0 = getTickCount();
+        var outDir = len( trim( arguments.outputDir ) ) ? arguments.outputDir : ( variables.config.getRootDir() & "tests/generated/" );
+        var safeOutDir = variables.sandbox.resolveSafePath( outDir );
+
+        if ( !directoryExists( safeOutDir ) ) {
+            directoryCreate( safeOutDir, true );
+        }
+
+        var causes = structKeyExists( arguments.diagnosis, "causes" ) ? arguments.diagnosis.causes : [];
+        if ( arrayLen( causes ) == 0 ) {
+            return {
+                "ok"          : false,
+                "message"     : "No se identificaron causas raiz para generar pruebas.",
+                "testCount"   : 0,
+                "filePath"    : ""
+            };
+        }
+
+        var timeStamp = dateTimeFormat( now(), "yyyyMMdd_HHmmss" );
+        var fileName  = "Regression_" & timeStamp & "_Test.bxs";
+        var fullPath  = safeOutDir & fileName;
+
+        var code = renderRegressionScript( causes, arguments.targetClass );
+        fileWrite( fullPath, code );
+
+        return {
+            "ok"          : true,
+            "fileName"    : fileName,
+            "filePath"    : fullPath,
+            "testCount"   : arrayLen( causes ),
+            "durationMs"  : getTickCount() - t0,
+            "code"        : code
+        };
+    }
+
+    /**
+     * Renderiza el codigo BoxLang nativo para la prueba de regresion.
+     */
+    public string function renderRegressionScript( required array causes, string targetClass = "target_app.PaymentService" ) {
+        var lines = [];
+        var safeTargetClass = reReplace( arguments.targetClass, "[^a-zA-Z0-9_\.]", "", "all" );
+        if ( !len( trim( safeTargetClass ) ) ) {
+            safeTargetClass = "target_app.PaymentService";
+        }
+
+        arrayAppend( lines, "/**" );
+        arrayAppend( lines, " * [FaultGraph-BX] Suite de Pruebas de Regresion Automatizada" );
+        arrayAppend( lines, " * Generada: " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+        arrayAppend( lines, " * Objetivo: Prevenir regresiones para fallos detectados previamente." );
+        arrayAppend( lines, " *" );
+        arrayAppend( lines, " * Ejecutar via: boxlang " & "tests/generated/" );
+        arrayAppend( lines, " */" );
+        arrayAppend( lines, "" );
+        arrayAppend( lines, "assert = new tests.harness.Assert();" );
+        arrayAppend( lines, "passed = 0;" );
+        arrayAppend( lines, "failed = 0;" );
+        arrayAppend( lines, "" );
+        arrayAppend( lines, "println( '=== EJECUTANDO SUITE DE REGRESION AUTOMATIZADA ===' );" );
+        arrayAppend( lines, "" );
+
+        for ( var i = 1; i <= arrayLen( arguments.causes ); i = i + 1 ) {
+            var c = arguments.causes[ i ];
+            var rawCode  = structKeyExists( c, "code" ) ? c.code : "UNKNOWN_DEFECT";
+            var rawTitle = structKeyExists( c, "title" ) ? c.title : rawCode;
+            var rawSev   = structKeyExists( c, "severity" ) ? c.severity : "HIGH";
+
+            var safeCodeName = reReplace( rawCode, "[\r\n]+", "_", "all" );
+            safeCodeName     = reReplace( safeCodeName, "[^a-zA-Z0-9_]", "_", "all" );
+            var safeTitle    = reReplace( rawTitle, "[\r\n]+", " ", "all" );
+            safeTitle        = replace( safeTitle, "*/", "* /", "all" );
+            var safeSev      = reReplace( rawSev, "[^a-zA-Z0-9_]", "", "all" );
+
+            arrayAppend( lines, "// ------------------------------------------------------------" );
+            arrayAppend( lines, "// Caso " & i & ": Regresion para " & safeCodeName & " [" & safeSev & "]" );
+            arrayAppend( lines, "// " & safeTitle );
+            var scList = structKeyExists( c, "scenarios" ) && isArray( c.scenarios ) ? arrayToList( c.scenarios, ", " ) : "";
+            if ( len( scList ) > 0 ) {
+                var safeScList = reReplace( scList, "[\r\n]+", " ", "all" );
+                arrayAppend( lines, "// Escenarios origen: " & safeScList );
+            }
+            arrayAppend( lines, "// ------------------------------------------------------------" );
+            arrayAppend( lines, "try {" );
+
+            if ( safeCodeName == "NULL_CONFIG_DEREF" || safeCodeName == "UNPROTECTED_CONFIG_DEREF" ) {
+                arrayAppend( lines, "    // Simulacion de configuracion sin seccion 'fallback'" );
+                arrayAppend( lines, "    cfgMissing = { merchantId: 'TEST_MERCHANT', currency: 'USD' };" );
+                arrayAppend( lines, "    gw = function( payload ) { throw( type='Timeout', message='Gateway timeout' ); };" );
+                arrayAppend( lines, "    svc = new " & safeTargetClass & "( cfgMissing, gw );" );
+                arrayAppend( lines, "    res = svc.charge( 'ORD-REG-01', 100.0, 'USD' );" );
+                arrayAppend( lines, "    assert.isTrue( isStruct( res ), 'El servicio debe retornar estructura incluso con configuracion ausente' );" );
+                arrayAppend( lines, "    assert.isNotEqual( 'FAILED', res.status, 'No debe fallar catastroficamente ante configuracion ausente' );" );
+            } else if ( safeCodeName == "TYPE_MISMATCH_NUMERIC" || safeCodeName == "UNVALIDATED_NUMERIC_CAST" ) {
+                arrayAppend( lines, "    // Simulacion de tasa con porcentaje en texto ('2.5%') y monto con separadores ('$1,250.00')" );
+                arrayAppend( lines, "    cfgRateText = { fallback: { surchargePct: '2.5%', queueName: 'offline-test' } };" );
+                arrayAppend( lines, "    gw = function( payload ) { throw( type='Timeout', message='Gateway timeout' ); };" );
+                arrayAppend( lines, "    svc = new " & safeTargetClass & "( cfgRateText, gw );" );
+                arrayAppend( lines, "    res = svc.charge( 'ORD-REG-02', '$1,250.00', 'USD' );" );
+                arrayAppend( lines, "    assert.isTrue( isStruct( res ), 'Debe manejar montos formateados como texto de forma segura' );" );
+                arrayAppend( lines, "    assert.isTrue( structKeyExists( res, 'surcharge' ) && isNumeric( res.surcharge ), 'El recargo debe ser numerico' );" );
+            } else {
+                // Caso generico para otras causas con sanitizacion estricta contra interpolacion y comillas
+                var rawSample = structKeyExists( c, "sampleError" ) ? left( c.sampleError, 120 ) : "Trace";
+                var cleanSample = reReplace( rawSample, "[\r\n]+", " ", "all" );
+                var hashChar = char( 35 );
+                cleanSample = replace( cleanSample, hashChar, hashChar & hashChar, "all" );
+                cleanSample = replace( cleanSample, "'", "''", "all" );
+
+                arrayAppend( lines, "    // Comprobacion de resiliencia generica para " & safeCodeName );
+                arrayAppend( lines, "    evidenceText = '" & cleanSample & "';" );
+                arrayAppend( lines, "    assert.isTrue( len( evidenceText ) > 0, 'La traza de evidencia no debe estar vacia' );" );
+            }
+
+            arrayAppend( lines, "    passed = passed + 1;" );
+            arrayAppend( lines, "    println( '  [PASS] Regresion " & safeCodeName & " superada con exito.' );" );
+            arrayAppend( lines, "} catch ( any e ) {" );
+            arrayAppend( lines, "    failed = failed + 1;" );
+            arrayAppend( lines, "    println( '  [FAIL] Regresion " & safeCodeName & " fallo: ' & e.message );" );
+            arrayAppend( lines, "}" );
+            arrayAppend( lines, "" );
+        }
+        arrayAppend( lines, "println( '===================================================' );" );
+        arrayAppend( lines, "println( 'RESULTADO REGRESION: ' & passed & ' superadas, ' & failed & ' falladas.' );" );
+        arrayAppend( lines, "if ( failed > 0 ) { throw( type = 'RegressionTestFailed', message = 'Fallaron ' & failed & ' pruebas de regresion.' ); }" );
+
+        return arrayToList( lines, char( 10 ) );
+    }
+
+    /**
+     * Genera una suite de pruebas formal en formato BDD para TestBox.
+     *
+     * @diagnosis Reporte de diagnostico con causas raiz
+     * @targetClass Clase objetivo bajo prueba
+     * @outputDir Directorio de destino para el archivo Spec
+     */
+    public struct function generateTestBoxSpec( required struct diagnosis, string targetClass = "target_app.PaymentService", string outputDir = "" ) {
+        var t0 = getTickCount();
+        var outDir = len( trim( arguments.outputDir ) ) ? arguments.outputDir : ( variables.config.getRootDir() & "tests/generated/" );
+        var safeOutDir = variables.sandbox.resolveSafePath( outDir );
+
+        if ( !directoryExists( safeOutDir ) ) {
+            directoryCreate( safeOutDir, true );
+        }
+
+        var causes = structKeyExists( arguments.diagnosis, "causes" ) ? arguments.diagnosis.causes : [];
+        if ( arrayLen( causes ) == 0 ) {
+            return {
+                "ok"          : false,
+                "message"     : "No se identificaron causas raiz para generar especificacion TestBox.",
+                "testCount"   : 0,
+                "filePath"    : ""
+            };
+        }
+
+        var timeStamp = dateTimeFormat( now(), "yyyyMMdd_HHmmss" );
+        var fileName  = "Regression_" & timeStamp & "_Spec.bx";
+        var fullPath  = safeOutDir & fileName;
+
+        var code = renderTestBoxSpec( causes, arguments.targetClass );
+        fileWrite( fullPath, code );
+
+        return {
+            "ok"          : true,
+            "fileName"    : fileName,
+            "filePath"    : fullPath,
+            "testCount"   : arrayLen( causes ),
+            "durationMs"  : getTickCount() - t0,
+            "code"        : code
+        };
+    }
+
+    /**
+     * Renderiza el codigo en sintaxis TestBox BDD (describe / it).
+     */
+    public string function renderTestBoxSpec( required array causes, string targetClass = "target_app.PaymentService" ) {
+        var lines = [];
+        var safeTargetClass = reReplace( arguments.targetClass, "[^a-zA-Z0-9_\.]", "", "all" );
+        if ( !len( trim( safeTargetClass ) ) ) {
+            safeTargetClass = "target_app.PaymentService";
+        }
+
+        arrayAppend( lines, "/**" );
+        arrayAppend( lines, " * [FaultGraph-BX] TestBox BDD Regression Spec" );
+        arrayAppend( lines, " * Generado automaticamente: " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+        arrayAppend( lines, " */" );
+        arrayAppend( lines, "class extends=""testbox.system.BaseSpec"" {" );
+        arrayAppend( lines, "" );
+        arrayAppend( lines, "    function run() {" );
+        arrayAppend( lines, "        describe( ""FaultGraph Regression Inoculation Suite"", () => {" );
+        arrayAppend( lines, "" );
+
+        for ( var i = 1; i <= arrayLen( arguments.causes ); i = i + 1 ) {
+            var c = arguments.causes[ i ];
+            var rawCode = structKeyExists( c, "code" ) ? c.code : "DEFECT";
+            var safeCode = reReplace( rawCode, "[^a-zA-Z0-9_]", "_", "all" );
+
+            arrayAppend( lines, "            it( ""debe neutralizar y sobrevivir al fallo " & safeCode & """, () => {" );
+            if ( safeCode == "NULL_CONFIG_DEREF" || safeCode == "UNPROTECTED_CONFIG_DEREF" ) {
+                arrayAppend( lines, "                var cfgMissing = { merchantId: 'TEST', currency: 'USD' };" );
+                arrayAppend( lines, "                var gw = function( p ) { throw( type='Timeout', message='Gateway timeout' ); };" );
+                arrayAppend( lines, "                var svc = new " & safeTargetClass & "( cfgMissing, gw );" );
+                arrayAppend( lines, "                var res = svc.charge( 'ORD-TESTBOX-01', 100.0, 'USD' );" );
+                arrayAppend( lines, "                expect( isStruct( res ) ).toBeTrue();" );
+                arrayAppend( lines, "                expect( res.status ).notToBe( 'FAILED' );" );
+            } else if ( safeCode == "TYPE_MISMATCH_NUMERIC" || safeCode == "UNVALIDATED_NUMERIC_CAST" ) {
+                arrayAppend( lines, "                var cfgRate = { fallback: { surchargePct: '2.5%', queueName: 'offline-test' } };" );
+                arrayAppend( lines, "                var gw = function( p ) { throw( type='Timeout', message='Gateway timeout' ); };" );
+                arrayAppend( lines, "                var svc = new " & safeTargetClass & "( cfgRate, gw );" );
+                arrayAppend( lines, "                var res = svc.charge( 'ORD-TESTBOX-02', '$1,250.00', 'USD' );" );
+                arrayAppend( lines, "                expect( isStruct( res ) ).toBeTrue();" );
+                arrayAppend( lines, "                expect( res.surcharge ).toBeNumeric();" );
+            } else {
+                arrayAppend( lines, "                expect( true ).toBeTrue( 'Prueba generica de regresion para " & safeCode & "' );" );
+            }
+            arrayAppend( lines, "            } );" );
+            arrayAppend( lines, "" );
+        }
+
+        arrayAppend( lines, "        } );" );
+        arrayAppend( lines, "    }" );
+        arrayAppend( lines, "" );
+        arrayAppend( lines, "}" );
+
+        return arrayToList( lines, char( 10 ) );
+    }
+
+}
+

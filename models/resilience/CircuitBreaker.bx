@@ -1,0 +1,235 @@
+/**
+ * CircuitBreaker.bx - Patron de Resiliencia Nativo para Alta Disponibilidad en BoxLang.
+ *
+ * Mision:
+ *   Protege los flujos criticos de produccion y previene la saturacion de hilos/recursos:
+ *     - CLOSED    : Estado saludable; el trafico fluye normalmente hacia el servicio primario.
+ *     - OPEN      : Circuito disparado tras superar el umbral de fallos; conmuta inmediatamente
+ *                   al flujo degradado/fallback con latencia de 0 ms (sin esperar timeouts).
+ *     - HALF_OPEN : Estado de sondeo transitorio tras expirar el tiempo de enfriamiento (resetTimeout);
+ *                   permite evaluar transacciones de prueba para verificar si el servicio remoto sano.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    property name="failureThreshold"          type="numeric" default="3";
+    property name="resetTimeoutMs"             type="numeric" default="3000";
+    property name="halfOpenSuccessThreshold"  type="numeric" default="2";
+    property name="state"                      type="string"  default="CLOSED";
+    property name="name"                       type="string"  default="default-breaker";
+
+    public any function init(
+        numeric failureThreshold = 3,
+        numeric resetTimeoutMs = 3000,
+        numeric halfOpenSuccessThreshold = 2,
+        string name = "default-breaker",
+        any eventBus = null
+    ) {
+        variables.failureThreshold         = arguments.failureThreshold;
+        variables.resetTimeoutMs            = arguments.resetTimeoutMs;
+        variables.halfOpenSuccessThreshold = arguments.halfOpenSuccessThreshold;
+        variables.name                      = arguments.name;
+        variables.eventBus                  = arguments.eventBus;
+
+        variables.lock                      = createObject( "java", "java.util.concurrent.locks.ReentrantLock" ).init();
+        variables.state                     = "CLOSED";
+        variables.consecutiveFailures       = 0;
+        variables.halfOpenSuccesses         = 0;
+        variables.lastStateChangeTime       = getTickCount();
+
+        variables.metrics = {
+            "totalCalls"     : 0,
+            "successfulCalls": 0,
+            "failedCalls"    : 0,
+            "fallbackCalls"  : 0,
+            "trippedCount"   : 0,
+            "createdAt"      : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+
+        return this;
+    }
+
+    public string function getState() {
+        variables.lock.lock();
+        try {
+            checkStateTransition();
+            return variables.state;
+        } finally {
+            variables.lock.unlock();
+        }
+    }
+
+    public struct function getMetrics() {
+        variables.lock.lock();
+        try {
+            checkStateTransition();
+            var m = duplicate( variables.metrics );
+            m[ "state" ] = variables.state;
+            m[ "consecutiveFailures" ] = variables.consecutiveFailures;
+            m[ "uptimeMs" ] = getTickCount() - variables.lastStateChangeTime;
+            return m;
+        } finally {
+            variables.lock.unlock();
+        }
+    }
+
+    public void function reset() {
+        variables.lock.lock();
+        try {
+            transitionTo( "CLOSED" );
+            variables.consecutiveFailures = 0;
+            variables.halfOpenSuccesses   = 0;
+        } finally {
+            variables.lock.unlock();
+        }
+    }
+
+    public void function forceOpen() {
+        variables.lock.lock();
+        try {
+            transitionTo( "OPEN" );
+            variables.metrics.trippedCount = variables.metrics.trippedCount + 1;
+        } finally {
+            variables.lock.unlock();
+        }
+    }
+
+    /**
+     * Ejecuta una operacion primaria protegida por el Circuit Breaker de forma thread-safe.
+     * Si el circuito esta OPEN o la operacion primaria falla, conmuta al fallback action.
+     *
+     * @primaryAction Funcion que ejecuta la llamada remota / operacion principal
+     * @fallbackAction Funcion que atiende el flujo degradado cuando el primario no esta disponible
+     */
+    public any function execute( required any primaryAction, any fallbackAction ) {
+        var currentState = "";
+        variables.lock.lock();
+        try {
+            variables.metrics.totalCalls = variables.metrics.totalCalls + 1;
+            checkStateTransition();
+            currentState = variables.state;
+        } finally {
+            variables.lock.unlock();
+        }
+
+        // 1. Si el circuito esta OPEN -> Fallback inmediato sin bloquear hilos
+        if ( currentState == "OPEN" ) {
+            variables.lock.lock();
+            try {
+                variables.metrics.fallbackCalls = variables.metrics.fallbackCalls + 1;
+            } finally {
+                variables.lock.unlock();
+            }
+            if ( structKeyExists( arguments, "fallbackAction" ) && !isNull( arguments.fallbackAction ) ) {
+                var circuitErr = {
+                    "type"    : "CircuitBreakerOpenException",
+                    "message" : "El Circuit Breaker [" & variables.name & "] esta en estado OPEN (fast-fail activado)."
+                };
+                return arguments.fallbackAction( circuitErr );
+            }
+            throw( type = "CircuitBreakerOpenException", message = "Circuit Breaker OPEN para [" & variables.name & "]" );
+        }
+
+        // 2. Si el circuito esta HALF_OPEN -> Sondeo de recuperacion
+        if ( currentState == "HALF_OPEN" ) {
+            try {
+                var result = arguments.primaryAction();
+                variables.lock.lock();
+                try {
+                    variables.metrics.successfulCalls = variables.metrics.successfulCalls + 1;
+                    variables.halfOpenSuccesses = variables.halfOpenSuccesses + 1;
+
+                    if ( variables.halfOpenSuccesses >= variables.halfOpenSuccessThreshold ) {
+                        transitionTo( "CLOSED" );
+                        variables.consecutiveFailures = 0;
+                        variables.halfOpenSuccesses   = 0;
+                    }
+                } finally {
+                    variables.lock.unlock();
+                }
+                return result;
+            } catch ( any primaryErr ) {
+                variables.lock.lock();
+                try {
+                    variables.metrics.failedCalls = variables.metrics.failedCalls + 1;
+                    variables.metrics.fallbackCalls = variables.metrics.fallbackCalls + 1;
+                    variables.metrics.trippedCount = variables.metrics.trippedCount + 1;
+                    transitionTo( "OPEN" );
+                } finally {
+                    variables.lock.unlock();
+                }
+
+                if ( structKeyExists( arguments, "fallbackAction" ) && !isNull( arguments.fallbackAction ) ) {
+                    return arguments.fallbackAction( primaryErr );
+                }
+                rethrow;
+            }
+        }
+
+        // 3. Circuito CLOSED -> Flujo normal protegido
+        try {
+            var normalResult = arguments.primaryAction();
+            variables.lock.lock();
+            try {
+                variables.metrics.successfulCalls = variables.metrics.successfulCalls + 1;
+                variables.consecutiveFailures = 0;
+            } finally {
+                variables.lock.unlock();
+            }
+            return normalResult;
+        } catch ( any err ) {
+            variables.lock.lock();
+            try {
+                variables.metrics.failedCalls = variables.metrics.failedCalls + 1;
+                variables.consecutiveFailures = variables.consecutiveFailures + 1;
+
+                if ( variables.consecutiveFailures >= variables.failureThreshold ) {
+                    variables.metrics.trippedCount = variables.metrics.trippedCount + 1;
+                    transitionTo( "OPEN" );
+                }
+
+                if ( structKeyExists( arguments, "fallbackAction" ) && !isNull( arguments.fallbackAction ) ) {
+                    variables.metrics.fallbackCalls = variables.metrics.fallbackCalls + 1;
+                }
+            } finally {
+                variables.lock.unlock();
+            }
+
+            if ( structKeyExists( arguments, "fallbackAction" ) && !isNull( arguments.fallbackAction ) ) {
+                return arguments.fallbackAction( err );
+            }
+            rethrow;
+        }
+    }
+
+    private void function checkStateTransition() {
+        if ( variables.state == "OPEN" ) {
+            var elapsed = getTickCount() - variables.lastStateChangeTime;
+            if ( elapsed >= variables.resetTimeoutMs ) {
+                transitionTo( "HALF_OPEN" );
+                variables.halfOpenSuccesses = 0;
+            }
+        }
+    }
+
+    private void function transitionTo( required string newState ) {
+        var oldState = variables.state;
+        if ( oldState != arguments.newState ) {
+            variables.state = arguments.newState;
+            variables.lastStateChangeTime = getTickCount();
+
+            if ( !isNull( variables.eventBus ) ) {
+                try {
+                    variables.eventBus.publish( "onCircuitStateChange", {
+                        "circuit" : variables.name,
+                        "from"    : oldState,
+                        "to"      : arguments.newState,
+                        "metrics" : duplicate( variables.metrics )
+                    } );
+                } catch ( any ignore ) {}
+            }
+        }
+    }
+
+}

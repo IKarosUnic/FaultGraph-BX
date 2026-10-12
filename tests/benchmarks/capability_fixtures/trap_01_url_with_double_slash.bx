@@ -1,0 +1,10 @@
+/**
+ * False-Positive Trap: String literal containing '//'
+ * FaultGraph line 176 find('//') truncates line, potentially corrupting subsequent parsing.
+ */
+class {
+    function getApiUrl() {
+        var endpoint = "https://api.boxlang.io/v1/payments";
+        return endpoint;
+    }
+}

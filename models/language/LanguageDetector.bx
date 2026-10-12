@@ -1,0 +1,681 @@
+/**
+ * LanguageDetector - Motor de identificacion inteligente de lenguajes de programacion,
+ * variantes, dialectos, versiones, dependencias y archivos tecnologicos mixtos.
+ *
+ * Capacidades:
+ *   1. Deteccion multifactorial: extensiones, descriptores de proyecto, firmas sintacticas, shebangs.
+ *   2. Discriminacion de lenguajes y dialectos similares: JS vs TS vs JSX/TSX, Python 2 vs 3,
+ *      Java 8/11/17/21, C vs C++, BoxLang vs CFML.
+ *   3. Asignacion cuantitativa de nivel de confianza (0.0 a 1.0).
+ *   4. Deteccion y segmentacion de archivos mixtos (HTML con JS y CSS, Vue, PHP embebido).
+ *   5. Tratamiento explicito de ambiguedad e incertidumbre sin invencion de resultados.
+ *   6. Censo tecnologico y distribucion multilingue a nivel de repositorio.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    public any function init( any config = null ) {
+        variables.config = arguments.config;
+        return this;
+    }
+
+    /**
+     * Detecta el lenguaje, dialecto y caracteristicas de un archivo individual.
+     *
+     * @filePath Ruta al archivo
+     * @content  Contenido opcional (si se omite y el archivo existe, se lee de disco)
+     */
+    public struct function detectLanguage( required string filePath, string content = "" ) {
+        var normPath = replace( arguments.filePath, "\", "/", "all" );
+        var fileName = listLast( normPath, "/" );
+        var ext = "";
+        if ( find( ".", fileName ) > 0 ) {
+            ext = lcase( listLast( fileName, "." ) );
+        }
+
+        var text = arguments.content;
+        if ( len( text ) == 0 && fileExists( arguments.filePath ) ) {
+            try {
+                text = fileRead( arguments.filePath );
+            } catch ( any e ) {
+                text = "";
+            }
+        }
+
+        var lines = listToArray( text, char( 10 ), true );
+        var totalLines = arrayLen( lines );
+
+        // 1. Identificar Shebang si existe en la linea 1
+        var shebangLang = "";
+        if ( totalLines >= 1 && left( trim( lines[ 1 ] ), 2 ) == ( char( 35 ) & "!" ) ) {
+            var firstLine = lcase( trim( lines[ 1 ] ) );
+            if ( find( "python3", firstLine ) > 0 )      { shebangLang = "Python"; }
+            else if ( find( "python", firstLine ) > 0 )  { shebangLang = "Python"; }
+            else if ( find( "node", firstLine ) > 0 )    { shebangLang = "JavaScript"; }
+            else if ( find( "bash", firstLine ) > 0 || find( "sh", firstLine ) > 0 ) { shebangLang = "Shell"; }
+            else if ( find( "perl", firstLine ) > 0 )    { shebangLang = "Perl"; }
+            else if ( find( "ruby", firstLine ) > 0 )    { shebangLang = "Ruby"; }
+        }
+
+        // Estructura base de resultado
+        var result = {
+            "filePath"                 : arguments.filePath,
+            "fileName"                 : fileName,
+            "extension"                : ext,
+            "language"                 : "UNKNOWN_LANGUAGE",
+            "dialect"                  : "Generic",
+            "version"                  : "unknown",
+            "confidence"               : 0.0,
+            "isMixed"                  : false,
+            "mixedTechnologies"        : [],
+            "isAmbiguous"              : false,
+            "ambiguityCandidates"      : [],
+            "ambiguityReason"          : "",
+            "featuresDetected"         : [],
+            "packageManagerOrBuildTool": "none",
+            "totalLines"               : totalLines
+        };
+
+        // 2. Descriptores de proyectos especificos
+        var descriptorMap = {
+            "box.json"           : { "lang": "BoxLang",    "tool": "boxlang", "dial": "BoxLang Module",    "conf": 1.0 },
+            ".boxlang.json"      : { "lang": "BoxLang",    "tool": "boxlang", "dial": "BoxLang Runtime",   "conf": 1.0 },
+            "boxlang.json"       : { "lang": "BoxLang",    "tool": "boxlang", "dial": "BoxLang Runtime",   "conf": 1.0 },
+            "pom.xml"            : { "lang": "Java",       "tool": "maven",   "dial": "Maven Project",     "conf": 1.0 },
+            "build.gradle"       : { "lang": "Java",       "tool": "gradle",  "dial": "Gradle Groovy",     "conf": 1.0 },
+            "build.gradle.kts"   : { "lang": "Kotlin",     "tool": "gradle",  "dial": "Gradle Kotlin",     "conf": 1.0 },
+            "package.json"       : { "lang": "JavaScript", "tool": "npm",     "dial": "Node.js Package",   "conf": 1.0 },
+            "tsconfig.json"      : { "lang": "TypeScript", "tool": "tsc",     "dial": "TypeScript Config", "conf": 1.0 },
+            "requirements.txt"   : { "lang": "Python",     "tool": "pip",     "dial": "Pip Requirements",  "conf": 1.0 },
+            "pyproject.toml"     : { "lang": "Python",     "tool": "poetry",  "dial": "PEP 518 / Poetry",  "conf": 1.0 },
+            "pipfile"            : { "lang": "Python",     "tool": "pipenv",  "dial": "Pipfile",           "conf": 1.0 },
+            "cargo.toml"         : { "lang": "Rust",       "tool": "cargo",   "dial": "Cargo Manifest",    "conf": 1.0 },
+            "go.mod"             : { "lang": "Go",         "tool": "go",      "dial": "Go Module",         "conf": 1.0 },
+            "composer.json"      : { "lang": "PHP",        "tool": "composer","dial": "Composer Package",  "conf": 1.0 },
+            "cmakelists.txt"     : { "lang": "Cpp",        "tool": "cmake",   "dial": "CMake Build",       "conf": 1.0 }
+        };
+
+        var lowerName = lcase( fileName );
+        if ( structKeyExists( descriptorMap, lowerName ) ) {
+            var descInfo = descriptorMap[ lowerName ];
+            result.language                  = descInfo.lang;
+            result.dialect                   = descInfo.dial;
+            result.packageManagerOrBuildTool = descInfo.tool;
+            result.confidence                = descInfo.conf;
+            arrayAppend( result.featuresDetected, "project_manifest" );
+            return result;
+        }
+
+        // 3. Resolucion por extension con analisis de contenido profundo
+        switch ( ext ) {
+            case "bx":
+            case "bxs":
+                result.language   = "BoxLang";
+                result.dialect    = ( ext == "bxs" ) ? "BoxLang Script / CLI" : "BoxLang Class";
+                result.confidence = 0.99;
+                result.version    = "1.18.0+";
+                result.packageManagerOrBuildTool = "boxlang";
+                arrayAppend( result.featuresDetected, "boxlang_extension" );
+                if ( findNoCase( "ortus.boxlang", text ) ) {
+                    arrayAppend( result.featuresDetected, "boxlang_runtime_imports" );
+                }
+                break;
+
+            case "cfm":
+            case "cfc":
+                if ( findNoCase( "ortus.boxlang", text ) || findNoCase( "@boxlang", text ) ) {
+                    result.language = "BoxLang";
+                    result.dialect  = "BoxLang CFML Compatibility";
+                    result.confidence = 0.95;
+                } else {
+                    result.language = "CFML";
+                    result.dialect  = ( ext == "cfc" ) ? "CFML Component" : "CFML Template";
+                    result.confidence = 0.92;
+                }
+                result.version = "CFML 2021+ / Lucee 5/6";
+                checkMixedHtml( text, result );
+                break;
+
+            case "java":
+                result.language   = "Java";
+                result.confidence = 0.98;
+                detectJavaDialectAndVersion( text, result );
+                break;
+
+            case "py":
+            case "pyw":
+            case "pyi":
+                result.language   = "Python";
+                result.confidence = 0.98;
+                detectPythonDialectAndVersion( text, result );
+                break;
+
+            case "ts":
+            case "mts":
+            case "cts":
+                result.language   = "TypeScript";
+                result.dialect    = "TypeScript Modern";
+                result.version    = "5.x";
+                result.confidence = 0.98;
+                detectTypeScriptFeatures( text, result );
+                break;
+
+            case "tsx":
+                result.language   = "TypeScript";
+                result.dialect    = "TypeScript JSX (TSX / React)";
+                result.version    = "5.x";
+                result.confidence = 0.99;
+                arrayAppend( result.featuresDetected, "jsx_syntax" );
+                detectTypeScriptFeatures( text, result );
+                break;
+
+            case "js":
+            case "mjs":
+            case "cjs":
+                var hasTsFeatures = detectTypeScriptFeatures( text, result );
+                if ( hasTsFeatures ) {
+                    result.language   = "TypeScript";
+                    result.dialect    = "TypeScript (in js container)";
+                    result.confidence = 0.88;
+                } else {
+                    result.language   = "JavaScript";
+                    result.dialect    = ( ext == "mjs" ) ? "ECMAScript Modules (ESM)" : ( ( ext == "cjs" ) ? "CommonJS (CJS)" : "JavaScript (ES6+)" );
+                    result.confidence = 0.95;
+                    detectJavaScriptFeatures( text, result );
+                }
+                break;
+
+            case "jsx":
+                result.language   = "JavaScript";
+                result.dialect    = "JavaScript JSX (React)";
+                result.confidence = 0.98;
+                arrayAppend( result.featuresDetected, "jsx_syntax" );
+                break;
+
+            case "c":
+                result.language   = "C";
+                result.dialect    = "C (C99 / C11)";
+                result.confidence = 0.95;
+                detectCFeatures( text, result );
+                break;
+
+            case "cpp":
+            case "cc":
+            case "cxx":
+            case "hpp":
+            case "hxx":
+                result.language   = "Cpp";
+                result.dialect    = "C++ (C++17 / C++20)";
+                result.confidence = 0.98;
+                detectCppFeatures( text, result );
+                break;
+
+            case "h":
+                resolveCvsCppHeader( text, result );
+                break;
+
+            case "go":
+                result.language   = "Go";
+                result.dialect    = "Go 1.18+ (Generics)";
+                result.version    = "1.21+";
+                result.confidence = 0.98;
+                detectGoFeatures( text, result );
+                break;
+
+            case "rs":
+                result.language   = "Rust";
+                result.dialect    = "Rust 2021 Edition";
+                result.confidence = 0.99;
+                detectRustFeatures( text, result );
+                break;
+
+            case "php":
+            case "phtml":
+                result.language   = "PHP";
+                result.dialect    = "PHP 8.x";
+                result.confidence = 0.96;
+                checkMixedHtml( text, result );
+                break;
+
+            case "html":
+            case "htm":
+                result.language   = "HTML";
+                result.dialect    = "HTML5";
+                result.confidence = 0.95;
+                checkMixedHtml( text, result );
+                break;
+
+            case "css":
+            case "scss":
+            case "sass":
+            case "less":
+                result.language   = "CSS";
+                result.dialect    = uCase( ext );
+                result.confidence = 0.95;
+                break;
+
+            case "json":
+                result.language   = "JSON";
+                result.dialect    = "JSON Data Format";
+                result.confidence = 0.99;
+                break;
+
+            case "xml":
+                result.language   = "XML";
+                result.dialect    = "XML Document";
+                result.confidence = 0.95;
+                break;
+
+            case "yaml":
+            case "yml":
+                result.language   = "YAML";
+                result.dialect    = "YAML Specification";
+                result.confidence = 0.98;
+                break;
+
+            case "sh":
+            case "bash":
+            case "ps1":
+            case "bat":
+            case "cmd":
+                result.language   = "Shell";
+                result.dialect    = ( ext == "ps1" ) ? "PowerShell" : ( ( ext == "bat" || ext == "cmd" ) ? "Windows Batch" : "Bash / POSIX Shell" );
+                result.confidence = 0.95;
+                break;
+
+            default:
+                if ( len( shebangLang ) > 0 ) {
+                    result.language   = shebangLang;
+                    result.dialect    = shebangLang & " Script (via Shebang)";
+                    result.confidence = 0.90;
+                    arrayAppend( result.featuresDetected, "shebang_detected" );
+                } else if ( len( trim( text ) ) > 0 ) {
+                    heuristicTokenAnalysis( text, result );
+                } else {
+                    result.language        = "UNKNOWN_LANGUAGE";
+                    result.isAmbiguous     = true;
+                    result.ambiguityReason = "Archivo sin extension conocida ni contenido interpretable.";
+                    result.confidence      = 0.0;
+                }
+                break;
+        }
+
+        return result;
+    }
+
+    /**
+     * Examina un proyecto completo e identifica su stack tecnologico, build tools y frameworks.
+     */
+    public struct function detectProject( required string projectRoot ) {
+        var root = replace( arguments.projectRoot, "\", "/", "all" );
+        if ( right( root, 1 ) != "/" ) { root = root & "/"; }
+
+        var projectInfo = {
+            "root"            : root,
+            "primaryLanguages": [],
+            "frameworks"      : [],
+            "buildTools"      : [],
+            "packageManagers" : [],
+            "manifestFiles"   : []
+        };
+
+        var descriptors = [
+            { "file": "box.json",          "lang": "BoxLang",    "tool": "CommandBox", "mgr": "commandbox", "fw": "ColdBox" },
+            { "file": "pom.xml",           "lang": "Java",       "tool": "Maven",      "mgr": "mvn",        "fw": "Spring / Java EE" },
+            { "file": "build.gradle",      "lang": "Java",       "tool": "Gradle",     "mgr": "gradle",     "fw": "Spring Boot" },
+            { "file": "package.json",      "lang": "JavaScript", "tool": "Node.js",   "mgr": "npm",        "fw": "" },
+            { "file": "tsconfig.json",     "lang": "TypeScript", "tool": "TypeScript","mgr": "npm",        "fw": "" },
+            { "file": "requirements.txt",  "lang": "Python",     "tool": "pip",        "mgr": "pip",        "fw": "" },
+            { "file": "pyproject.toml",    "lang": "Python",     "tool": "Poetry",     "mgr": "poetry",     "fw": "" },
+            { "file": "Cargo.toml",        "lang": "Rust",       "tool": "Cargo",      "mgr": "cargo",      "fw": "Tokio" },
+            { "file": "go.mod",            "lang": "Go",         "tool": "Go Modules", "mgr": "go",         "fw": "Gin / Chi" },
+            { "file": "composer.json",     "lang": "PHP",        "tool": "Composer",   "mgr": "composer",   "fw": "Laravel / Symfony" },
+            { "file": "CMakeLists.txt",    "lang": "Cpp",        "tool": "CMake",      "mgr": "cmake",      "fw": "" }
+        ];
+
+        for ( var d in descriptors ) {
+            var fullPath = root & d.file;
+            if ( fileExists( fullPath ) ) {
+                arrayAppend( projectInfo.manifestFiles, d.file );
+                if ( !arrayFind( projectInfo.primaryLanguages, d.lang ) ) {
+                    arrayAppend( projectInfo.primaryLanguages, d.lang );
+                }
+                if ( !arrayFind( projectInfo.buildTools, d.tool ) ) {
+                    arrayAppend( projectInfo.buildTools, d.tool );
+                }
+                if ( !arrayFind( projectInfo.packageManagers, d.mgr ) ) {
+                    arrayAppend( projectInfo.packageManagers, d.mgr );
+                }
+
+                try {
+                    var mContent = fileRead( fullPath );
+                    if ( d.file == "package.json" ) {
+                        if ( findNoCase( '"react"', mContent ) )        { arrayAppend( projectInfo.frameworks, "React" ); }
+                        if ( findNoCase( '"vue"', mContent ) )          { arrayAppend( projectInfo.frameworks, "Vue.js" ); }
+                        if ( findNoCase( '"@angular/core"', mContent ) ){ arrayAppend( projectInfo.frameworks, "Angular" ); }
+                        if ( findNoCase( '"express"', mContent ) )      { arrayAppend( projectInfo.frameworks, "Express" ); }
+                        if ( findNoCase( '"next"', mContent ) )         { arrayAppend( projectInfo.frameworks, "Next.js" ); }
+                    } else if ( d.file == "pom.xml" || d.file == "build.gradle" ) {
+                        if ( findNoCase( "spring-boot", mContent ) )    { arrayAppend( projectInfo.frameworks, "Spring Boot" ); }
+                        if ( findNoCase( "quarkus", mContent ) )        { arrayAppend( projectInfo.frameworks, "Quarkus" ); }
+                        if ( findNoCase( "micronaut", mContent ) )      { arrayAppend( projectInfo.frameworks, "Micronaut" ); }
+                    } else if ( d.file == "requirements.txt" || d.file == "pyproject.toml" ) {
+                        if ( findNoCase( "django", mContent ) )         { arrayAppend( projectInfo.frameworks, "Django" ); }
+                        if ( findNoCase( "fastapi", mContent ) )        { arrayAppend( projectInfo.frameworks, "FastAPI" ); }
+                        if ( findNoCase( "flask", mContent ) )          { arrayAppend( projectInfo.frameworks, "Flask" ); }
+                    } else if ( d.file == "box.json" ) {
+                        if ( findNoCase( "coldbox", mContent ) )        { arrayAppend( projectInfo.frameworks, "ColdBox" ); }
+                    }
+                } catch ( any ignore ) {}
+            }
+        }
+
+        return projectInfo;
+    }
+
+    /**
+     * Realiza un censo completo multilingue del repositorio sin asumir un solo lenguaje.
+     */
+    public struct function censusRepository( required string targetDir ) {
+        var t0 = getTickCount();
+        var safeRoot = replace( arguments.targetDir, "\", "/", "all" );
+        if ( right( safeRoot, 1 ) != "/" ) { safeRoot = safeRoot & "/"; }
+
+        var files = directoryList( safeRoot, true, "path" );
+        var stats = {
+            "targetDir"              : safeRoot,
+            "totalFiles"             : 0,
+            "totalLines"             : 0,
+            "durationMs"             : 0,
+            "isMultiLanguage"        : false,
+            "distributionByLanguage" : {},
+            "mixedFiles"             : [],
+            "ambiguousFiles"         : [],
+            "projectDescriptors"     : detectProject( safeRoot )
+        };
+
+        var ignoredDirs = [ ".git", "node_modules", ".gradle", "target", "build", "dist", ".boxlang-cache", "reports", "temp" ];
+
+        for ( var f in files ) {
+            var normF = replace( f, "\", "/", "all" );
+            var relPath = replace( normF, safeRoot, "" );
+
+            var skip = false;
+            for ( var ig in ignoredDirs ) {
+                if ( findNoCase( "/" & ig & "/", "/" & relPath ) > 0 || left( relPath, len( ig ) + 1 ) == ( ig & "/" ) ) {
+                    skip = true;
+                    break;
+                }
+            }
+            if ( skip ) { continue; }
+
+            if ( directoryExists( normF ) ) { continue; }
+
+            var det = detectLanguage( normF );
+            stats.totalFiles = stats.totalFiles + 1;
+            stats.totalLines = stats.totalLines + det.totalLines;
+
+            var langKey = det.language;
+            if ( !structKeyExists( stats.distributionByLanguage, langKey ) ) {
+                stats.distributionByLanguage[ langKey ] = {
+                    "files"     : 0,
+                    "lines"     : 0,
+                    "percentage": 0.0,
+                    "dialects"  : []
+                };
+            }
+
+            stats.distributionByLanguage[ langKey ].files = stats.distributionByLanguage[ langKey ].files + 1;
+            stats.distributionByLanguage[ langKey ].lines = stats.distributionByLanguage[ langKey ].lines + det.totalLines;
+            if ( !arrayFind( stats.distributionByLanguage[ langKey ].dialects, det.dialect ) ) {
+                arrayAppend( stats.distributionByLanguage[ langKey ].dialects, det.dialect );
+            }
+
+            if ( det.isMixed ) {
+                arrayAppend( stats.mixedFiles, { "path": relPath, "technologies": det.mixedTechnologies } );
+            }
+            if ( det.isAmbiguous ) {
+                arrayAppend( stats.ambiguousFiles, { "path": relPath, "reason": det.ambiguityReason, "candidates": det.ambiguityCandidates } );
+            }
+        }
+
+        var distinctLangs = 0;
+        for ( var l in stats.distributionByLanguage ) {
+            if ( l != "UNKNOWN_LANGUAGE" && stats.distributionByLanguage[ l ].files > 0 ) {
+                distinctLangs++;
+            }
+            if ( stats.totalLines > 0 ) {
+                stats.distributionByLanguage[ l ].percentage = round( ( stats.distributionByLanguage[ l ].lines / stats.totalLines ) * 10000 ) / 100;
+            }
+        }
+
+        stats.isMultiLanguage = ( distinctLangs > 1 );
+        stats.durationMs = getTickCount() - t0;
+        return stats;
+    }
+
+    // ==================================================================
+    // Heuristicas de Dialectos, Versiones y Sintaxis
+    // ==================================================================
+
+    private void function detectJavaDialectAndVersion( required string text, required struct result ) {
+        arrayAppend( result.featuresDetected, "java_extension" );
+        result.version = "8";
+
+        if ( reFindNoCase( "\brecord\s+[A-Za-z0-9_]+\s*\(", arguments.text ) ) {
+            result.version = "17+ (LTS)";
+            result.dialect = "Java 17/21 (Records)";
+            arrayAppend( result.featuresDetected, "java_records" );
+        } else if ( findNoCase( "Thread.ofVirtual()", arguments.text ) || findNoCase( "SequencedCollection", arguments.text ) ) {
+            result.version = "21 (LTS)";
+            result.dialect = "Java 21 (Virtual Threads)";
+            arrayAppend( result.featuresDetected, "virtual_threads" );
+        } else if ( reFindNoCase( "\bvar\s+[a-zA-Z0-9_]+\s*=", arguments.text ) ) {
+            result.version = "11+ (LTS)";
+            result.dialect = "Java 11 (Var Syntax)";
+            arrayAppend( result.featuresDetected, "java_var_syntax" );
+        } else {
+            result.dialect = "Java 8+ (Classic OOP)";
+        }
+    }
+
+    private void function detectPythonDialectAndVersion( required string text, required struct result ) {
+        arrayAppend( result.featuresDetected, "python_extension" );
+
+        var isPy2 = false;
+        if ( reFindNoCase( "print\s+['""]", arguments.text ) && !find( "print(", arguments.text ) ) {
+            isPy2 = true;
+        } else if ( reFindNoCase( "except\s+[a-zA-Z0-9_]+\s*,\s*[a-zA-Z0-9_]+\s*:", arguments.text ) ) {
+            isPy2 = true;
+        }
+
+        if ( isPy2 ) {
+            result.version = "2.7 (Legacy)";
+            result.dialect = "Python 2.x (Legacy)";
+            arrayAppend( result.featuresDetected, "python2_syntax" );
+            return;
+        }
+
+        result.version = "3.10+";
+        result.dialect = "Python 3.x (Modern)";
+        if ( reFindNoCase( "def\s+[a-zA-Z0-9_]+\s*\([^)]*:[^)]*\)\s*->", arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "python_type_hints" );
+        }
+        if ( findNoCase( "async def", arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "async_await" );
+        }
+        if ( reFindNoCase( "f['""][^'""']*" & char( 123 ), arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "f_strings" );
+        }
+    }
+
+    private boolean function detectTypeScriptFeatures( required string text, required struct result ) {
+        var hasTs = false;
+        if ( reFindNoCase( "\b(interface|type)\s+[A-Za-z0-9_]+\s*(=|" & char( 123 ) & ")", arguments.text ) ) {
+            hasTs = true;
+            arrayAppend( result.featuresDetected, "ts_interface_or_type_alias" );
+        }
+        if ( reFindNoCase( ":\s*(string|number|boolean|any|void|Record|Array)[,;=\s)]", arguments.text ) ) {
+            hasTs = true;
+            arrayAppend( result.featuresDetected, "ts_static_type_annotations" );
+        }
+        if ( reFindNoCase( "\bas\s+(const|[A-Z][a-zA-Z0-9_]*)", arguments.text ) ) {
+            hasTs = true;
+            arrayAppend( result.featuresDetected, "ts_type_assertion" );
+        }
+        if ( reFindNoCase( "\benum\s+[A-Za-z0-9_]+", arguments.text ) ) {
+            hasTs = true;
+            arrayAppend( result.featuresDetected, "ts_enum" );
+        }
+        return hasTs;
+    }
+
+    private void function detectJavaScriptFeatures( required string text, required struct result ) {
+        if ( findNoCase( "async ", arguments.text ) && findNoCase( "await ", arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "js_async_await" );
+        }
+        if ( reFindNoCase( "(const|let)\s+[a-zA-Z0-9_]+\s*=", arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "es6_block_scoping" );
+        }
+        if ( find( "=>", arguments.text ) ) {
+            arrayAppend( result.featuresDetected, "arrow_functions" );
+        }
+    }
+
+    private void function detectCFeatures( required string text, required struct result ) {
+        arrayAppend( result.featuresDetected, "c_standard_library" );
+        if ( find( char( 35 ) & "include <stdio.h>", arguments.text ) ) { arrayAppend( result.featuresDetected, "stdio_h" ); }
+        if ( find( "malloc(", arguments.text ) )                       { arrayAppend( result.featuresDetected, "manual_heap_alloc" ); }
+    }
+
+    private void function detectCppFeatures( required string text, required struct result ) {
+        arrayAppend( result.featuresDetected, "cpp_features" );
+        if ( find( "std::", arguments.text ) )                        { arrayAppend( result.featuresDetected, "std_namespace" ); }
+        if ( find( "template<", arguments.text ) )                    { arrayAppend( result.featuresDetected, "cpp_templates" ); }
+        if ( find( "class ", arguments.text ) )                       { arrayAppend( result.featuresDetected, "cpp_classes" ); }
+        if ( find( char( 35 ) & "include <iostream>", arguments.text ) > 0 ) { arrayAppend( result.featuresDetected, "iostream" ); }
+        if ( find( char( 35 ) & "include <vector>", arguments.text ) > 0 )   { arrayAppend( result.featuresDetected, "stl_vector" ); }
+    }
+
+    private void function resolveCvsCppHeader( required string text, required struct result ) {
+        var hStr = char( 35 ) & "include ";
+        var cppMarkers = [ "std::", "template<", "class ", "namespace ", "public:", "private:", hStr & "<iostream>", hStr & "<vector>", hStr & "<string>" ];
+        var hasCppMarker = false;
+        for ( var m in cppMarkers ) {
+            if ( findNoCase( m, arguments.text ) ) {
+                hasCppMarker = true;
+                break;
+            }
+        }
+
+        if ( hasCppMarker ) {
+            result.language   = "Cpp";
+            result.dialect    = "C++ Header";
+            result.confidence = 0.90;
+            detectCppFeatures( arguments.text, result );
+        } else if ( find( "extern ""C""", arguments.text ) ) {
+            result.language   = "Cpp";
+            result.dialect    = "C++ Header with C Linkage";
+            result.confidence = 0.92;
+            arrayAppend( result.featuresDetected, "extern_c" );
+        } else if ( find( char( 35 ) & "include <stdio.h>", arguments.text ) || find( "typedef struct", arguments.text ) ) {
+            result.language   = "C";
+            result.dialect    = "C Header (.h)";
+            result.confidence = 0.85;
+            detectCFeatures( arguments.text, result );
+        } else {
+            result.language            = "C";
+            result.isAmbiguous         = true;
+            result.ambiguityCandidates = [ "C", "Cpp" ];
+            result.ambiguityReason     = "Encabezado .h sin directivas exclusivas de C++ ni firmas exclusivas de C.";
+            result.confidence          = 0.55;
+        }
+    }
+
+    private void function detectGoFeatures( required string text, required struct result ) {
+        if ( find( "package ", arguments.text ) ) { arrayAppend( result.featuresDetected, "go_package" ); }
+        if ( find( "func ", arguments.text ) )    { arrayAppend( result.featuresDetected, "go_func" ); }
+        if ( find( "chan ", arguments.text ) )    { arrayAppend( result.featuresDetected, "go_channel" ); }
+        if ( find( "go ", arguments.text ) )      { arrayAppend( result.featuresDetected, "goroutines" ); }
+    }
+
+    private void function detectRustFeatures( required string text, required struct result ) {
+        if ( find( "fn ", arguments.text ) )      { arrayAppend( result.featuresDetected, "rust_fn" ); }
+        if ( find( "let mut ", arguments.text ) ) { arrayAppend( result.featuresDetected, "rust_mutability" ); }
+        if ( find( "impl ", arguments.text ) )    { arrayAppend( result.featuresDetected, "rust_traits_impl" ); }
+        if ( find( "unsafe " & char( 123 ), arguments.text ) ) { arrayAppend( result.featuresDetected, "rust_unsafe_block" ); }
+    }
+
+    private void function checkMixedHtml( required string text, required struct result ) {
+        var lines = listToArray( arguments.text, char( 10 ), true );
+        var jsLines = 0;
+        var cssLines = 0;
+        var inScript = false;
+        var inStyle = false;
+
+        for ( var l in lines ) {
+            var trimmed = trim( l );
+            if ( findNoCase( "<script", trimmed ) ) { inScript = true; }
+            if ( findNoCase( "<style", trimmed ) )  { inStyle = true; }
+
+            if ( inScript ) { jsLines++; }
+            if ( inStyle )  { cssLines++; }
+
+            if ( findNoCase( "</script>", trimmed ) ) { inScript = false; }
+            if ( findNoCase( "</style>", trimmed ) )  { inStyle = false; }
+        }
+
+        if ( jsLines > 0 || cssLines > 0 ) {
+            result.isMixed = true;
+            var tot = max( 1, arrayLen( lines ) );
+
+            if ( jsLines > 0 ) {
+                arrayAppend( result.mixedTechnologies, {
+                    "technology": "JavaScript",
+                    "confidence": 0.95,
+                    "lineCount" : jsLines,
+                    "percentage": round( ( jsLines / tot ) * 10000 ) / 100
+                } );
+            }
+            if ( cssLines > 0 ) {
+                arrayAppend( result.mixedTechnologies, {
+                    "technology": "CSS",
+                    "confidence": 0.90,
+                    "lineCount" : cssLines,
+                    "percentage": round( ( cssLines / tot ) * 10000 ) / 100
+                } );
+            }
+            var baseLines = tot - jsLines - cssLines;
+            arrayAppend( result.mixedTechnologies, {
+                "technology": ( result.language != "UNKNOWN_LANGUAGE" ? result.language : "HTML" ),
+                "confidence": 0.98,
+                "lineCount" : max( 0, baseLines ),
+                "percentage": round( ( max( 0, baseLines ) / tot ) * 10000 ) / 100
+            } );
+        }
+    }
+
+    private void function heuristicTokenAnalysis( required string text, required struct result ) {
+        if ( find( "public class ", arguments.text ) && find( "public static void main", arguments.text ) ) {
+            result.language   = "Java";
+            result.confidence = 0.85;
+            result.dialect    = "Java Class (Inferred)";
+        } else if ( find( "def ", arguments.text ) && find( "import ", arguments.text ) && ( find( "self.", arguments.text ) || find( ":", arguments.text ) ) ) {
+            result.language   = "Python";
+            result.confidence = 0.80;
+            result.dialect    = "Python Script (Inferred)";
+        } else if ( find( "function ", arguments.text ) && ( find( "var ", arguments.text ) || find( "const ", arguments.text ) || find( "let ", arguments.text ) ) ) {
+            result.language   = "JavaScript";
+            result.confidence = 0.80;
+            result.dialect    = "JavaScript (Inferred)";
+        } else {
+            result.language            = "UNKNOWN_LANGUAGE";
+            result.isAmbiguous         = true;
+            result.ambiguityCandidates = [ "Text", "Binary", "Custom" ];
+            result.ambiguityReason     = "Tokens de programacion no determinan un lenguaje con umbral >= 60% de confianza.";
+            result.confidence          = 0.20;
+        }
+    }
+
+}

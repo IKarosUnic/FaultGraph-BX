@@ -1,0 +1,8 @@
+/**
+ * Known Defect: Unsynchronized global mutation (CWE-362)
+ */
+class {
+    function increment() {
+        application.requestCount = application.requestCount + 1;
+    }
+}

@@ -1,0 +1,96 @@
+/**
+ * FaultGraph-BX - CLI de Diagnostico de Logs y Trazas Externas.
+ *
+ * Uso:
+ *   boxlang diagnose_log.bxs
+ *   set FAULTGRAPH_LOG_PATH=c:/ruta/a/mi_error.log && boxlang diagnose_log.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+cfg = new config.Config( rootDir );
+ingestor = new models.LogDiagnosticIngestor( cfg );
+
+import ortus.boxlang.runtime.BoxRuntime;
+
+sys = createObject( "java", "java.lang.System" );
+envLog = sys.getenv( "FAULTGRAPH_LOG_PATH" );
+
+// Detectar argumento CLI si fue provisto
+rawCliArgs = BoxRuntime.getInstance().getCliOptions().cliArgs() ?: [];
+cliLogPath = "";
+for ( i = 1; i <= arrayLen( rawCliArgs ); i++ ) {
+    argVal = rawCliArgs[ i ];
+    if ( i > 1 || !findNoCase( ".bxs", argVal ) ) {
+        cliLogPath = argVal;
+        break;
+    }
+}
+
+logPath = ( len( trim( cliLogPath ) ) > 0 ) ? ( reFind( "^([a-zA-Z]:|[\\/])", cliLogPath ) ? cliLogPath : ( rootDir & cliLogPath ) ) : ( ( !isNull( envLog ) && len( trim( envLog ) ) ) ? trim( envLog ) : ( rootDir & "target_app/sample_crash.log" ) );
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: INGESTA Y DIAGNOSTICO DE LOGS       " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Archivo log  : " & logPath );
+println( "IA Local     : " & ( cfg.isLocalAiAvailable() ? cfg.getLocalAi().model : "desactivado (offline)" ) );
+println( "============================================================" );
+println( "" );
+
+if ( !fileExists( logPath ) ) {
+    println( "[INFO] Creando archivo de log de ejemplo en: " & logPath );
+    sampleLog = "2026-10-10 22:30:00 [ERROR] PaymentService: BoxCastException: Can't cast [2.5%] to a Number at PaymentService.bx:60" & char( 10 )
+        & "2026-10-10 22:30:01 [FATAL] PaymentGateway: ConnectionRefusedException: Connect to 10.0.0.1:443 failed" & char( 10 )
+        & "2026-10-10 22:30:02 [ERROR] PaymentService: The key [fallback] was not found in the struct." & char( 10 );
+    fileWrite( logPath, sampleLog );
+}
+
+diagRes = ingestor.ingestAndDiagnoseFile( logPath, cfg.isLocalAiAvailable() );
+
+if ( !diagRes.ok ) {
+    println( "[ERROR] " & diagRes.error );
+    abort;
+}
+
+println( "Lineas de log procesadas : " & diagRes.totalLogLines );
+println( "Errores/Excepciones      : " & diagRes.errorsExtracted );
+println( "Tiempo de diagnostico    : " & diagRes.durationMs & " ms" );
+println( "------------------------------------------------------------" );
+println( "CAUSAS RAIZ DIAGNOSTICADAS:" );
+
+causes = diagRes.diagnosis.causes;
+if ( arrayLen( causes ) == 0 ) {
+    println( "  No se detectaron causas criticas conocidas en las trazas." );
+} else {
+    for ( c in causes ) {
+        println( "  [CAUSA] " & c.code & " [" & c.severity & "]" );
+        println( "    Descripcion : " & c.title );
+        println( "    Evidencia   : " & ( structKeyExists( c, "sampleError" ) ? c.sampleError : "N/D" ) );
+        println( "    Explicacion : " & c.explanation );
+        println( "" );
+    }
+}
+
+if ( structKeyExists( diagRes.aiChallenge, "ok" ) && diagRes.aiChallenge.ok ) {
+    println( "------------------------------------------------------------" );
+    println( "CUESTIONAMIENTO IA LOCAL (Abogado del Diablo):" );
+    chObj = diagRes.aiChallenge.challenge;
+    chText = ( isStruct( chObj ) && structKeyExists( chObj, "challengeText" ) ) ? chObj.challengeText : ( ( isStruct( chObj ) && structKeyExists( chObj, "challenge" ) ) ? chObj.challenge : toString( chObj ) );
+    println( "  Cuestionamiento : " & chText );
+    valStatus = isStruct( diagRes.aiChallenge.validation ) ? ( "[" & diagRes.aiChallenge.validation.verdict & "] " & diagRes.aiChallenge.validation.reason ) : toString( diagRes.aiChallenge.validation );
+    println( "  Validador Indep.: " & valStatus );
+}
+
+println( "------------------------------------------------------------" );
+println( "GRAFO MERMAID:" );
+println( diagRes.mermaidGraph );
+println( "============================================================" );
+
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+
+diagOut = reportsDir & "log-diagnosis-report.json";
+fileWrite( diagOut, jsonSerialize( diagRes ) );
+println( "Reporte guardado en: " & diagOut );

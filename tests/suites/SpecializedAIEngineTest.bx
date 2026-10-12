@@ -1,0 +1,181 @@
+/**
+ * SpecializedAIEngineTest - Banco de pruebas para la Flota de Especialistas de IA Local Bajo Demanda.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testProfilesRegistration();
+        testModelTieringResolution();
+        testSecuritySpecialistAudit();
+        testCodeAnalysisSpecialistCorrelation();
+        testResearchSpecialistSynthesis();
+        testVerificationSpecialistAdversarial();
+        testOfflineSafeDegradation();
+    }
+
+    private void function testProfilesRegistration() {
+        var id = "TC-SA-01";
+        var scenario = "Registro e instanciacion de los 5 especialistas locales bajo demanda";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.SpecializedAIEngine( cfg );
+
+            var profiles = engine.getSpecialistProfiles();
+            variables.assert.isTrue( structKeyExists( profiles, "SECURITY" ) );
+            variables.assert.isTrue( structKeyExists( profiles, "CODE_ANALYSIS" ) );
+            variables.assert.isTrue( structKeyExists( profiles, "RESEARCH" ) );
+            variables.assert.isTrue( structKeyExists( profiles, "VERIFICATION" ) );
+            variables.assert.isTrue( structKeyExists( profiles, "ORCHESTRATION" ) );
+
+            variables.reporter.record( id, scenario, "Perfiles de Especialistas", "5 especialistas registrados formalmente", "Flota de especialistas completa", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Perfiles", "5 perfiles", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testModelTieringResolution() {
+        var id = "TC-SA-02";
+        var scenario = "Estratificacion dinamica de modelos segun complejidad del rol";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.SpecializedAIEngine( cfg );
+
+            var secModel  = engine.resolveModelForRole( "SECURITY" );
+            var resModel  = engine.resolveModelForRole( "RESEARCH" );
+            var orchModel = engine.resolveModelForRole( "ORCHESTRATION" );
+
+            variables.assert.isEqual( "qwen2.5-coder:3b", secModel );
+            variables.assert.isEqual( "llama3.1:8b", resModel );
+            variables.assert.isEqual( "qwen2.5-coder:1.5b", orchModel );
+
+            variables.reporter.record( id, scenario, "Resolucion de modelo por rol", "Estratificacion proporcional al perfil", "Tiering verificado (1.5B, 3B, 8B)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Tiering modelos", "Resolucion correcta", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testSecuritySpecialistAudit() {
+        var id = "TC-SA-03";
+        var scenario = "SecuritySpecialist: auditoria semantica y validacion independiente";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.SpecializedAIEngine( cfg );
+
+            var snippet = "var surcharge = arguments.amount * variables.config.fallback.surchargePct;";
+            var res = engine.auditCode( snippet );
+
+            variables.assert.isTrue( isStruct( res ) );
+            variables.assert.isEqual( "SecuritySpecialist", res.specialist );
+            variables.assert.isTrue( structKeyExists( res, "used" ) );
+
+            variables.reporter.record( id, scenario, "Auditoria SecuritySpecialist", "Respuesta estructurada y sanitizada", "Especialista de seguridad ejecutado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "SecuritySpecialist", "Ejecucion", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testCodeAnalysisSpecialistCorrelation() {
+        var id = "TC-SA-04";
+        var scenario = "CodeAnalysisSpecialist: correlacion de evidencias multi-escenario";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.SpecializedAIEngine( cfg );
+
+            var mockFailures = [
+                { id: "S01", errorType: "BoxCastException", errorMessage: "Can't cast [2.5%]" },
+                { id: "S05", errorType: "BoxCastException", errorMessage: "Can't cast []" }
+            ];
+
+            var res = engine.analyzeFailure( mockFailures );
+            variables.assert.isTrue( isStruct( res ) );
+            variables.assert.isEqual( "CodeAnalysisSpecialist", res.specialist );
+
+            variables.reporter.record( id, scenario, "Correlacion CodeAnalysisSpecialist", "Analisis multi-escenario completado", "Correlacion asistida confirmada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "CodeAnalysisSpecialist", "Correlacion", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testResearchSpecialistSynthesis() {
+        var id = "TC-SA-05";
+        var scenario = "ResearchSpecialist: sintesis tecnica comparando base de conocimiento y web";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var kb     = new models.KnowledgeBase( cfg );
+            var engine = new models.SpecializedAIEngine( cfg, null, null, kb );
+
+            var kbEntries = kb.search( "BoxCastException", "", 2 );
+            var webMock = [ { "type": "OFFICIAL_DOCS", "title": "BoxLang Data Types", "summary": "Explicit casts required for strings." } ];
+
+            var res = engine.researchSynthesis( "Casting de porcentaje en fallback", kbEntries, webMock );
+            variables.assert.isTrue( isStruct( res ) );
+            variables.assert.isEqual( "ResearchSpecialist", res.specialist );
+            variables.assert.isTrue( len( trim( res.synthesis ) ) > 0 || len( trim( res.error ) ) > 0 );
+
+            variables.reporter.record( id, scenario, "Sintesis ResearchSpecialist", "Resumen contextualizado generado", "Sintesis de investigacion verificada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "ResearchSpecialist", "Sintesis", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testVerificationSpecialistAdversarial() {
+        var id = "TC-SA-06";
+        var scenario = "VerificationSpecialist (Abogado del Diablo): revision critica de diagnostico";
+        var t0 = getTickCount();
+        try {
+            var cfg    = new config.Config( variables.rootDir );
+            var engine = new models.SpecializedAIEngine( cfg );
+
+            var mockDiag = {
+                "causes": [ { "code": "TYPE_MISMATCH_NUMERIC", "severity": "CRITICAL" } ]
+            };
+            var mockChaos = {
+                "results": [ { "id": "S01", "survived": false, "errorType": "BoxCastException", "errorMessage": "Can't cast [2.5%]" } ]
+            };
+
+            var res = engine.adversarialReview( mockDiag, mockChaos );
+            variables.assert.isTrue( isStruct( res ) );
+            variables.assert.isEqual( "VerificationSpecialist", res.specialist );
+
+            variables.reporter.record( id, scenario, "Revision critica VerificationSpecialist", "Evaluacion adversarial estructurada", "Abogado del Diablo ejecutado", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "VerificationSpecialist", "Adversarial", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testOfflineSafeDegradation() {
+        var id = "TC-SA-07";
+        var scenario = "Degradacion segura de especialistas en modo offline (0 tokens)";
+        var t0 = getTickCount();
+        try {
+            var mockOfflineCfg = {
+                "isLocalAiEnabled": function() { return false; },
+                "getLocalAi": function() { return { "model": "qwen2.5-coder:3b" }; },
+                "getRootDir": function() { return variables.rootDir; }
+            };
+
+            var engine = new models.SpecializedAIEngine( mockOfflineCfg );
+            var auditRes = engine.auditCode( "var x = 1;" );
+
+            variables.assert.isFalse( auditRes.used, "No debe usar IA si esta deshabilitada" );
+            variables.assert.isTrue( len( auditRes.error ) > 0, "Debe informar degradacion segura" );
+
+            variables.reporter.record( id, scenario, "Degradacion offline", "used=false y mensaje informativo", "0 tokens consumidos offline", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Degradacion offline", "Segura", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

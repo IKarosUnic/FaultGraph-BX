@@ -1,0 +1,151 @@
+/**
+ * SarifExporterTest - Banco de pruebas para SarifExporter.bx y estandar OASIS SARIF v2.1.0.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testRuleCatalog();
+        testExportFromScanResults();
+        testSeverityMapping();
+        testMarkdownSummaryGeneration();
+        testSaveToFile();
+    }
+
+    private void function testRuleCatalog() {
+        var id = "TC-SARIF-01";
+        var scenario = "Integridad del catalogo de reglas y metadatos CWE";
+        var t0 = getTickCount();
+        try {
+            var exporter = new models.SarifExporter();
+            var catalog = exporter.getRuleCatalog();
+
+            variables.assert.isTrue( structKeyExists( catalog, "UNPROTECTED_CONFIG_DEREF" ) );
+            variables.assert.isTrue( structKeyExists( catalog, "UNVALIDATED_NUMERIC_CAST" ) );
+            variables.assert.isTrue( structKeyExists( catalog, "HARDCODED_SECRET" ) );
+            variables.assert.isTrue( arrayLen( catalog.UNPROTECTED_CONFIG_DEREF.properties.cwe ) > 0 );
+
+            variables.reporter.record( id, scenario, "Verificacion de catalogo de reglas", "Reglas formales presentes con CWE", "Catalogo verificado (" & structCount( catalog ) & " reglas)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Verificacion catalogo", "Reglas presentes", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testExportFromScanResults() {
+        var id = "TC-SARIF-02";
+        var scenario = "Conversion formal de hallazgos a SARIF v2.1.0";
+        var t0 = getTickCount();
+        try {
+            var exporter = new models.SarifExporter();
+            var mockScan = {
+                "ok": true,
+                "files": [
+                    {
+                        "filePath": "c:/app/PaymentService.bx",
+                        "issues": [
+                            {
+                                "line": 60,
+                                "code": "UNPROTECTED_CONFIG_DEREF",
+                                "severity": "HIGH",
+                                "description": "Acceso anidado no protegido",
+                                "evidence": "variables.config.fallback.queueName",
+                                "remediation": "Validar con structKeyExists()"
+                            }
+                        ]
+                    }
+                ]
+            };
+
+            var sarif = exporter.exportFromScanner( mockScan );
+
+            variables.assert.isEqual( "2.1.0", sarif.version );
+            variables.assert.isTrue( arrayLen( sarif.runs ) == 1 );
+            variables.assert.isTrue( arrayLen( sarif.runs[ 1 ].results ) == 1 );
+            variables.assert.isEqual( "UNPROTECTED_CONFIG_DEREF", sarif.runs[ 1 ].results[ 1 ].ruleId );
+            variables.assert.isEqual( "error", sarif.runs[ 1 ].results[ 1 ].level );
+
+            variables.reporter.record( id, scenario, "Conversion a SARIF v2.1.0", "Esquema y resultados validos", "SARIF 2.1.0 generado correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Conversion SARIF", "SARIF valido", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testSeverityMapping() {
+        var id = "TC-SARIF-03";
+        var scenario = "Mapeo determinista de severidad a niveles SARIF";
+        var t0 = getTickCount();
+        try {
+            var exporter = new models.SarifExporter();
+
+            variables.assert.isEqual( "error", exporter.mapSeverityToSarifLevel( "CRITICAL" ) );
+            variables.assert.isEqual( "error", exporter.mapSeverityToSarifLevel( "HIGH" ) );
+            variables.assert.isEqual( "warning", exporter.mapSeverityToSarifLevel( "MEDIUM" ) );
+            variables.assert.isEqual( "note", exporter.mapSeverityToSarifLevel( "LOW" ) );
+            variables.assert.isEqual( "note", exporter.mapSeverityToSarifLevel( "INFO" ) );
+
+            variables.reporter.record( id, scenario, "Mapeo de severidades", "CRITICAL/HIGH->error, MEDIUM->warning, LOW/INFO->note", "Mapeos conformes al estandar", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Mapeo severidades", "Conforme a estandar", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testMarkdownSummaryGeneration() {
+        var id = "TC-SARIF-04";
+        var scenario = "Generacion de resumen Markdown para GitHub Actions";
+        var t0 = getTickCount();
+        try {
+            var exporter = new models.SarifExporter();
+            var mockScan = {
+                "files": [
+                    {
+                        "filePath": "PaymentService.bx",
+                        "issues": [
+                            { "line": 42, "code": "HARDCODED_SECRET", "severity": "CRITICAL", "description": "Token expuesto", "evidence": "token = '123'", "remediation": "readEnv()" }
+                        ]
+                    }
+                ]
+            };
+            var sarif = exporter.exportFromScanner( mockScan );
+            var md = exporter.generateMarkdownSummary( sarif );
+
+            variables.assert.isTrue( find( "FaultGraph-BX", md ) > 0 );
+            variables.assert.isTrue( find( "HARDCODED_SECRET", md ) > 0 );
+            variables.assert.isTrue( find( "PaymentService.bx:42", md ) > 0 );
+
+            variables.reporter.record( id, scenario, "Resumen Markdown para CI", "Contiene tabla y ubicacion del error", "Resumen generado (" & len( md ) & " bytes)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Resumen Markdown", "Tabla con error", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testSaveToFile() {
+        var id = "TC-SARIF-05";
+        var scenario = "Persistencia y serializacion JSON de informe SARIF";
+        var t0 = getTickCount();
+        try {
+            var exporter = new models.SarifExporter();
+            var mockScan = { "files": [] };
+            var sarif = exporter.exportFromScanner( mockScan );
+            var targetPath = variables.rootDir & "reports/temp_test.sarif";
+
+            exporter.saveToFile( sarif, targetPath );
+            variables.assert.isTrue( fileExists( targetPath ), "El archivo SARIF debe existir" );
+            var readContent = fileRead( targetPath );
+            variables.assert.isTrue( isJson( readContent ), "El contenido debe ser JSON valido" );
+
+            // Limpieza
+            fileDelete( targetPath );
+
+            variables.reporter.record( id, scenario, "Escritura de archivo SARIF", "Archivo JSON valido en disco", "Persistencia validada exitosamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Persistencia SARIF", "JSON valido", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

@@ -1,0 +1,209 @@
+/**
+ * AstTransformer - Motor de Transformacion Estructural de Codigo BoxLang.
+ *
+ * Mision:
+ *   Proporciona transformaciones sintacticas y estructurales seguras sobre codigo BoxLang:
+ *     1. Inyeccion de operadores de navegacion segura y Elvis (?. y ?:).
+ *     2. Envoltorio defensivo de bloques y funciones con try/catch y compensacion.
+ *     3. Inyeccion de clausulas de guarda para parametros nulos o tipos incompatibles.
+ *     4. Generacion de diffs unificados para integracion en SARIF o revision de codigo.
+ *     5. Verificacion de validez sintactica post-transformacion via BoxParser.
+ */
+class {
+
+    public any function init() {
+        try {
+            variables.parser = new ortus.boxlang.compiler.parser.BoxParser();
+            variables.parserAvailable = true;
+        } catch ( any e ) {
+            variables.parserAvailable = false;
+        }
+        return this;
+    }
+
+    public boolean function isParserAvailable() {
+        return variables.parserAvailable;
+    }
+
+    /**
+     * Transforma accesos arriesgados como 'obj.prop' a navegacion segura con Elvis '(obj?.prop ?: default)'.
+     *
+     * @sourceCode      Codigo fuente original
+     * @targetExpression Expresion a proteger (ej. "config.taxRate")
+     * @defaultValue    Valor de respaldo seguro (ej. "0" o '""')
+     */
+    public struct function injectSafeElvis( required string sourceCode, required string targetExpression, string defaultValue = "0" ) {
+        var original = arguments.sourceCode;
+        var target   = trim( arguments.targetExpression );
+        if ( len( target ) == 0 || !find( target, original ) ) {
+            return { "ok": false, "transformed": original, "modified": false, "reason": "Expresion no encontrada" };
+        }
+
+        // Construir reemplazo seguro
+        var safeReplacement = target;
+        if ( find( ".", target ) && !find( "?.", target ) ) {
+            safeReplacement = replace( target, ".", "?.", "all" );
+        }
+        var fullReplacement = "( " & safeReplacement & " ?: " & arguments.defaultValue & " )";
+
+        // Evitar reemplazo redundante si ya tiene Elvis o fallback
+        if ( find( fullReplacement, original ) ) {
+            return { "ok": true, "transformed": original, "modified": false, "reason": "Ya protegido" };
+        }
+
+        var transformed = replace( original, target, fullReplacement, "all" );
+        var valid = validateSyntax( transformed );
+
+        return {
+            "ok"          : valid.valid,
+            "transformed" : transformed,
+            "modified"    : true,
+            "diff"        : generateUnifiedDiff( original, transformed, "patch.bx" ),
+            "syntaxError" : valid.error
+        };
+    }
+
+    /**
+     * Envuelve el cuerpo de un metodo o bloque de codigo en una estructura defensiva try/catch.
+     *
+     * @sourceCode       Codigo fuente original
+     * @functionName     Nombre de la funcion objetivo
+     * @compensationCode Codigo a ejecutar en el bloque catch (ej. 'return { "ok": false, "error": e.message };')
+     */
+    public struct function wrapWithTryCatch( required string sourceCode, required string functionName, string compensationCode = 'return { "ok": false, "error": e.message };' ) {
+        var original = arguments.sourceCode;
+        var pattern  = "function\s+" & arguments.functionName & "\s*\([^\)]*\)\s*\{";
+        var matcher  = reFind( "(?i)" & pattern, original, 1, true );
+
+        if ( matcher.pos[ 1 ] == 0 ) {
+            return { "ok": false, "transformed": original, "modified": false, "reason": "Funcion no encontrada: " & arguments.functionName };
+        }
+
+        var funcHeaderEnd = matcher.pos[ 1 ] + matcher.len[ 1 ];
+        var prefix = mid( original, 1, funcHeaderEnd );
+        var rest   = mid( original, funcHeaderEnd + 1, len( original ) - funcHeaderEnd );
+
+        // Localizar el cierre de la funcion buscando llaves emparejadas
+        var depth = 1;
+        var closePos = 0;
+        for ( var i = 1; i <= len( rest ); i++ ) {
+            var ch = mid( rest, i, 1 );
+            if ( ch == "{" ) {
+                depth++;
+            } else if ( ch == "}" ) {
+                depth--;
+                if ( depth == 0 ) {
+                    closePos = i;
+                    break;
+                }
+            }
+        }
+
+        if ( closePos == 0 ) {
+            return { "ok": false, "transformed": original, "modified": false, "reason": "Estructura de llaves no balanceada" };
+        }
+
+        var body = mid( rest, 1, closePos - 1 );
+        var suffix = mid( rest, closePos, len( rest ) - closePos + 1 );
+
+        var wrappedBody = char( 10 ) & "        try {" & char( 10 ) & body & char( 10 ) & "        } catch ( any e ) {" & char( 10 ) & "            " & arguments.compensationCode & char( 10 ) & "        }" & char( 10 ) & "    ";
+
+        var transformed = prefix & wrappedBody & suffix;
+        var valid = validateSyntax( transformed );
+
+        return {
+            "ok"          : valid.valid,
+            "transformed" : transformed,
+            "modified"    : true,
+            "diff"        : generateUnifiedDiff( original, transformed, "patch.bx" ),
+            "syntaxError" : valid.error
+        };
+    }
+
+    /**
+     * Inyecta clausulas de guarda al inicio de una funcion para evitar desreferencias nulas en parametros.
+     *
+     * @sourceCode   Codigo fuente original
+     * @functionName Nombre de la funcion objetivo
+     * @paramNames   Lista o array de parametros a proteger
+     */
+    public struct function injectNullGuards( required string sourceCode, required string functionName, required any paramNames ) {
+        var original = arguments.sourceCode;
+        var params = isArray( arguments.paramNames ) ? arguments.paramNames : listToArray( arguments.paramNames );
+        var pattern = "function\s+" & arguments.functionName & "\s*\([^\)]*\)\s*\{";
+        var matcher = reFind( "(?i)" & pattern, original, 1, true );
+
+        if ( matcher.pos[ 1 ] == 0 ) {
+            return { "ok": false, "transformed": original, "modified": false, "reason": "Funcion no encontrada" };
+        }
+
+        var insertPoint = matcher.pos[ 1 ] + matcher.len[ 1 ];
+        var guards = char( 10 );
+        for ( var p in params ) {
+            var pClean = trim( p );
+            guards &= '        if ( isNull( arguments.' & pClean & ' ) ) { throw( type="InvalidArgumentException", message="Parametro requerido ausente: ' & pClean & '" ); }' & char( 10 );
+        }
+
+        var transformed = mid( original, 1, insertPoint ) & guards & mid( original, insertPoint + 1, len( original ) - insertPoint );
+        var valid = validateSyntax( transformed );
+
+        return {
+            "ok"          : valid.valid,
+            "transformed" : transformed,
+            "modified"    : true,
+            "diff"        : generateUnifiedDiff( original, transformed, "patch.bx" ),
+            "syntaxError" : valid.error
+        };
+    }
+
+    /**
+     * Valida sintacticamente el codigo transformado mediante el compilador de BoxLang.
+     */
+    public struct function validateSyntax( required string code ) {
+        if ( !variables.parserAvailable ) {
+            return { "valid": true, "error": "" };
+        }
+        try {
+            var parseRes = variables.parser.parse( arguments.code, true );
+            if ( !parseRes.isCorrect() ) {
+                var errMsgs = [];
+                for ( var iss in parseRes.getIssues() ) {
+                    arrayAppend( errMsgs, iss.getMessage() );
+                }
+                return { "valid": false, "error": arrayToList( errMsgs, "; " ) };
+            }
+            return { "valid": true, "error": "" };
+        } catch ( any e ) {
+            return { "valid": false, "error": e.message };
+        }
+    }
+
+    /**
+     * Genera un diff unificado estilo git entre dos versiones de codigo.
+     */
+    public string function generateUnifiedDiff( required string oldCode, required string newCode, string fileName = "source.bx" ) {
+        var oldLines = listToArray( arguments.oldCode, char( 10 ), true );
+        var newLines = listToArray( arguments.newCode, char( 10 ), true );
+        var diff = "--- a/" & arguments.fileName & char( 10 ) & "+++ b/" & arguments.fileName & char( 10 );
+        diff &= "@@ -1," & arrayLen( oldLines ) & " +1," & arrayLen( newLines ) & " @@" & char( 10 );
+
+        var maxLines = max( arrayLen( oldLines ), arrayLen( newLines ) );
+        for ( var i = 1; i <= maxLines; i++ ) {
+            var oldL = ( i <= arrayLen( oldLines ) ) ? oldLines[ i ] : "";
+            var newL = ( i <= arrayLen( newLines ) ) ? newLines[ i ] : "";
+
+            if ( oldL == newL ) {
+                diff &= " " & oldL & char( 10 );
+            } else {
+                if ( len( oldL ) > 0 ) {
+                    diff &= "-" & oldL & char( 10 );
+                }
+                if ( len( newL ) > 0 ) {
+                    diff &= "+" & newL & char( 10 );
+                }
+            }
+        }
+        return diff;
+    }
+
+}

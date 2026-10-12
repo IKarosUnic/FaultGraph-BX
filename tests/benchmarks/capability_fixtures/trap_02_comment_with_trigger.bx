@@ -1,0 +1,10 @@
+/**
+ * False-Positive Trap: Comments mentioning dangerous functions
+ */
+class {
+    function documentation() {
+        // Warning: Runtime.getRuntime() or ProcessBuilder should never be invoked.
+        // Also do not hardcode api_key = "abcdef1234567890abcdef" in source files.
+        return true;
+    }
+}

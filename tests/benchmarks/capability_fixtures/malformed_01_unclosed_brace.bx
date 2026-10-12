@@ -1,0 +1,5 @@
+/**
+ * Malformed BoxLang: unclosed function and class brace
+ */
+class {
+    function broken(

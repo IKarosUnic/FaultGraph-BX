@@ -1,0 +1,8 @@
+/**
+ * Clean Example: Parametrized SQL query
+ */
+class {
+    function getUser( required string id ) {
+        return queryExecute( "SELECT * FROM users WHERE id = :id", { id: arguments.id } );
+    }
+}

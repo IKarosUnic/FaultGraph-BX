@@ -1,0 +1,327 @@
+/**
+ * RepositoryIntake - Motor de Incorporacion e Ingesta Inteligente de Repositorios para FaultGraph-BX.
+ *
+ * Mision:
+ *   1. Identifica lenguajes, frameworks, gestores de paquetes, dependencias y versiones.
+ *   2. Descubre puntos de entrada, estructura de directorios, scripts de construccion, ejecucion y tests.
+ *   3. Mapea contratos, interfaces, configuraciones y posibles puntos criticos (Single Points of Failure - SPOF).
+ *   4. Identifica suites de pruebas existentes, documentacion y restricciones de compatibilidad.
+ *   5. Aplica principios de confianza cero (Zero-Trust): el codigo y configuracion del repositorio
+ *      se tratan como datos no confiables y se analizan en un entorno seguro y sanitizado.
+ */
+class {
+
+    public any function init( any config = null, any sandbox = null ) {
+        variables.config  = structKeyExists( arguments, "config" ) && !isNull( arguments.config ) ? arguments.config : new config.Config( getCurrentTemplatePath() );
+        variables.sandbox = structKeyExists( arguments, "sandbox" ) && !isNull( arguments.sandbox ) ? arguments.sandbox : new models.SecuritySandbox( variables.config );
+        variables.detector = new models.language.LanguageDetector( variables.config );
+        return this;
+    }
+
+    /**
+     * Realiza la ingesta e inspeccion completa de un repositorio local o clonado.
+     *
+     * @targetPath Ruta al directorio raiz del repositorio
+     */
+    public struct function onboardRepository( required string targetPath ) {
+        var t0 = getTickCount();
+        var safeRoot = variables.sandbox.resolveSafePath( arguments.targetPath );
+        if ( !directoryExists( safeRoot ) ) {
+            return {
+                "ok"         : false,
+                "error"      : "El directorio del repositorio no existe: " & safeRoot,
+                "durationMs" : getTickCount() - t0
+            };
+        }
+
+        var manifestData = inspectManifests( safeRoot );
+        var structure    = inspectStructure( safeRoot );
+        var census       = variables.detector.censusRepository( safeRoot );
+        census[ "primaryLanguage" ] = structCount( census.distributionByLanguage ) > 0 ? structKeyArray( census.distributionByLanguage )[ 1 ] : "BoxLang";
+        var procedures   = detectProcedures( safeRoot, manifestData );
+        var criticalPoints = identifyCriticalPoints( safeRoot, manifestData, structure );
+        var testSuites   = discoverTestSuites( safeRoot, manifestData );
+
+        return {
+            "ok"               : true,
+            "repositoryPath"   : safeRoot,
+            "repoName"         : getFileFromPath( safeRoot ),
+            "durationMs"       : getTickCount() - t0,
+            "census"           : census,
+            "manifests"        : manifestData,
+            "structure"        : structure,
+            "procedures"       : procedures,
+            "criticalPoints"   : criticalPoints,
+            "testSuites"       : testSuites,
+            "untrustedDataWarning" : "Contenido del repositorio tratado estrictamente como datos no confiables."
+        };
+    }
+
+    /**
+     * Inspecciona y analiza manifiestos de dependencias para diversos ecosistemas.
+     */
+    public struct function inspectManifests( required string repoPath ) {
+        var manifests = {
+            "boxlang"    : { "found": false, "file": "", "name": "", "version": "", "dependencies": {}, "scripts": {} },
+            "nodejs"     : { "found": false, "file": "", "name": "", "version": "", "dependencies": {}, "scripts": {} },
+            "maven"      : { "found": false, "file": "", "groupId": "", "artifactId": "", "version": "", "dependenciesCount": 0 },
+            "python"     : { "found": false, "file": "", "type": "", "dependencies": [] },
+            "rust"       : { "found": false, "file": "", "package": "", "version": "", "dependencies": [] },
+            "golang"     : { "found": false, "file": "", "module": "", "goVersion": "" }
+        };
+
+        // 1. BoxLang (box.json)
+        var boxJsonPath = arguments.repoPath & "/box.json";
+        if ( fileExists( boxJsonPath ) ) {
+            try {
+                var content = fileRead( boxJsonPath );
+                var parsed = jsonDeserialize( content );
+                manifests.boxlang.found = true;
+                manifests.boxlang.file = "box.json";
+                manifests.boxlang.name = structKeyExists( parsed, "name" ) ? parsed.name : "";
+                manifests.boxlang.version = structKeyExists( parsed, "version" ) ? parsed.version : "0.0.0";
+                manifests.boxlang.dependencies = structKeyExists( parsed, "dependencies" ) && isStruct( parsed.dependencies ) ? parsed.dependencies : {};
+                manifests.boxlang.scripts = structKeyExists( parsed, "scripts" ) && isStruct( parsed.scripts ) ? parsed.scripts : {};
+                manifests.boxlang.minBoxLang = structKeyExists( parsed, "boxlang" ) && structKeyExists( parsed.boxlang, "minVersion" ) ? parsed.boxlang.minVersion : "";
+            } catch ( any e ) {
+                manifests.boxlang.error = "Error al deserializar box.json: " & e.message;
+            }
+        }
+
+        // 2. Node.js (package.json)
+        var pkgJsonPath = arguments.repoPath & "/package.json";
+        if ( fileExists( pkgJsonPath ) ) {
+            try {
+                var content = fileRead( pkgJsonPath );
+                var parsed = jsonDeserialize( content );
+                manifests.nodejs.found = true;
+                manifests.nodejs.file = "package.json";
+                manifests.nodejs.name = structKeyExists( parsed, "name" ) ? parsed.name : "";
+                manifests.nodejs.version = structKeyExists( parsed, "version" ) ? parsed.version : "0.0.0";
+                manifests.nodejs.dependencies = structKeyExists( parsed, "dependencies" ) && isStruct( parsed.dependencies ) ? parsed.dependencies : {};
+                manifests.nodejs.scripts = structKeyExists( parsed, "scripts" ) && isStruct( parsed.scripts ) ? parsed.scripts : {};
+            } catch ( any e ) {
+                manifests.nodejs.error = "Error al deserializar package.json: " & e.message;
+            }
+        }
+
+        // 3. Maven / Gradle
+        var pomPath = arguments.repoPath & "/pom.xml";
+        if ( fileExists( pomPath ) ) {
+            manifests.maven.found = true;
+            manifests.maven.file = "pom.xml";
+            var pomText = fileRead( pomPath );
+            var depMatches = reMatchNoCase( "<dependency>", pomText );
+            manifests.maven.dependenciesCount = arrayLen( depMatches );
+        }
+
+        // 4. Python (requirements.txt / pyproject.toml)
+        var reqPath = arguments.repoPath & "/requirements.txt";
+        var pyprojPath = arguments.repoPath & "/pyproject.toml";
+        if ( fileExists( reqPath ) ) {
+            manifests.python.found = true;
+            manifests.python.file = "requirements.txt";
+            manifests.python.type = "pip";
+            var lines = listToArray( fileRead( reqPath ), char( 10 ), true );
+            for ( var l in lines ) {
+                var tl = trim( l );
+                if ( len( tl ) && left( tl, 1 ) != "##" ) {
+                    arrayAppend( manifests.python.dependencies, tl );
+                }
+            }
+        } else if ( fileExists( pyprojPath ) ) {
+            manifests.python.found = true;
+            manifests.python.file = "pyproject.toml";
+            manifests.python.type = "pyproject";
+        }
+
+        // 5. Rust (Cargo.toml)
+        var cargoPath = arguments.repoPath & "/Cargo.toml";
+        if ( fileExists( cargoPath ) ) {
+            manifests.rust.found = true;
+            manifests.rust.file = "Cargo.toml";
+        }
+
+        // 6. Go (go.mod)
+        var goModPath = arguments.repoPath & "/go.mod";
+        if ( fileExists( goModPath ) ) {
+            manifests.golang.found = true;
+            manifests.golang.file = "go.mod";
+        }
+
+        return manifests;
+    }
+
+    /**
+     * Mapea la estructura de directorios, capas y componentes.
+     */
+    public struct function inspectStructure( required string repoPath ) {
+        var structure = {
+            "directories"   : [],
+            "entryPoints"   : [],
+            "configFiles"   : [],
+            "documentation" : [],
+            "hasGit"        : directoryExists( arguments.repoPath & "/.git" )
+        };
+
+        var allDirs = directoryList( arguments.repoPath, false, "path" );
+        for ( var d in allDirs ) {
+            if ( directoryExists( d ) ) {
+                var dName = getFileFromPath( d );
+                if ( dName != ".git" && dName != "node_modules" && dName != ".boxlang-cache" ) {
+                    arrayAppend( structure.directories, dName );
+                }
+            }
+        }
+
+        // Detectar puntos de entrada comunes
+        var candidateEntries = [
+            "run.bxs", "index.bxs", "server.bxs", "main.bx", "Application.cfc",
+            "index.js", "app.js", "main.py", "app.py", "index.ts", "main.go", "src/main.rs"
+        ];
+        for ( var entry in candidateEntries ) {
+            if ( fileExists( arguments.repoPath & "/" & entry ) ) {
+                arrayAppend( structure.entryPoints, {
+                    "path"     : entry,
+                    "type"     : right( entry, 3 ) == ".bx" || right( entry, 4 ) == ".bxs" ? "BoxLang" : "Polyglot"
+                } );
+            }
+        }
+
+        // Detectar archivos de configuracion
+        var candidateConfigs = [
+            "box.json", ".boxlang.json", "boxlang.json", "config/Config.bx",
+            ".env", "application.properties", "application.yml", "tsconfig.json"
+        ];
+        for ( var cfgFile in candidateConfigs ) {
+            if ( fileExists( arguments.repoPath & "/" & cfgFile ) ) {
+                arrayAppend( structure.configFiles, cfgFile );
+            }
+        }
+
+        // Detectar documentacion
+        var docs = [ "README.md", "ARCHITECTURE.md", "CONTRIBUTING.md", "LICENSE" ];
+        for ( var docFile in docs ) {
+            if ( fileExists( arguments.repoPath & "/" & docFile ) ) {
+                arrayAppend( structure.documentation, docFile );
+            }
+        }
+
+        return structure;
+    }
+
+    /**
+     * Identifica procedimientos de construccion, ejecucion y pruebas.
+     */
+    public struct function detectProcedures( required string repoPath, struct manifests = {} ) {
+        var procedures = {
+            "build" : [],
+            "run"   : [],
+            "test"  : []
+        };
+
+        // Si hay box.json con scripts
+        if ( structKeyExists( arguments.manifests, "boxlang" ) && arguments.manifests.boxlang.found ) {
+            var bScripts = arguments.manifests.boxlang.scripts;
+            if ( structKeyExists( bScripts, "test" ) ) {
+                arrayAppend( procedures.test, { "tool": "BoxLang Test", "command": bScripts.test, "source": "box.json" } );
+            }
+            if ( structKeyExists( bScripts, "demo" ) ) {
+                arrayAppend( procedures.run, { "tool": "BoxLang Run", "command": bScripts.demo, "source": "box.json" } );
+            }
+            if ( structKeyExists( bScripts, "compile" ) ) {
+                arrayAppend( procedures.build, { "tool": "BoxLang Compiler", "command": bScripts.compile, "source": "box.json" } );
+            }
+        }
+
+        // Si hay tests/runner.bxs
+        if ( fileExists( arguments.repoPath & "/tests/runner.bxs" ) ) {
+            arrayAppend( procedures.test, { "tool": "FaultGraph Test Runner", "command": "boxlang tests/runner.bxs", "source": "filesystem" } );
+        }
+
+        // Si hay run.bxs
+        if ( fileExists( arguments.repoPath & "/run.bxs" ) ) {
+            arrayAppend( procedures.run, { "tool": "FaultGraph CLI", "command": "boxlang run.bxs", "source": "filesystem" } );
+        }
+
+        // Si hay package.json
+        if ( structKeyExists( arguments.manifests, "nodejs" ) && arguments.manifests.nodejs.found ) {
+            var nScripts = arguments.manifests.nodejs.scripts;
+            if ( structKeyExists( nScripts, "test" ) ) {
+                arrayAppend( procedures.test, { "tool": "Node Test", "command": "npm test", "source": "package.json" } );
+            }
+            if ( structKeyExists( nScripts, "build" ) ) {
+                arrayAppend( procedures.build, { "tool": "Node Build", "command": "npm run build", "source": "package.json" } );
+            }
+        }
+
+        return procedures;
+    }
+
+    /**
+     * Identifica posibles puntos criticos (Single Points of Failure, gateways externos, fallbacks).
+     */
+    public array function identifyCriticalPoints( required string repoPath, struct manifests = {}, struct structure = {} ) {
+        var criticalPoints = [];
+
+        // Buscar componentes de pago, autenticacion o integraciones externas
+        var targetFiles = directoryList( arguments.repoPath, true, "path", "*.bx|*.bxs|*.java|*.js|*.py" );
+        for ( var f in targetFiles ) {
+            var rel = replace( replace( f, arguments.repoPath, "" ), "\", "/", "all" );
+            if ( left( rel, 1 ) == "/" ) rel = right( rel, len( rel ) - 1 );
+
+            if ( findNoCase( "test", rel ) || findNoCase( "reports", rel ) || findNoCase( "build", rel ) ) {
+                continue;
+            }
+
+            var text = fileRead( f );
+            if ( findNoCase( "gateway", text ) && findNoCase( "fallback", text ) ) {
+                arrayAppend( criticalPoints, {
+                    "component" : rel,
+                    "type"      : "RESILIENCE_GATEWAY_FALLBACK",
+                    "risk"      : "Componente con contingencia de fallback dependiente de pasarela externa.",
+                    "severity"  : "CRITICAL"
+                } );
+            } else if ( findNoCase( "password", text ) && findNoCase( "hardcoded", text ) ) {
+                arrayAppend( criticalPoints, {
+                    "component" : rel,
+                    "type"      : "SECURITY_CREDENTIAL_EXPOSURE",
+                    "risk"      : "Posible credencial sensible o patron hardcodeado.",
+                    "severity"  : "HIGH"
+                } );
+            } else if ( findNoCase( "timeout", text ) && findNoCase( "http", text ) ) {
+                arrayAppend( criticalPoints, {
+                    "component" : rel,
+                    "type"      : "EXTERNAL_IO_TIMEOUT",
+                    "risk"      : "Llamada de red I/O remota sujeta a degradacion por latencia o timeout.",
+                    "severity"  : "MEDIUM"
+                } );
+            }
+        }
+
+        return criticalPoints;
+    }
+
+    /**
+     * Descubre suites de pruebas existentes y marcos asociados.
+     */
+    public array function discoverTestSuites( required string repoPath, struct manifests = {} ) {
+        var suites = [];
+        var testsDir = arguments.repoPath & "/tests";
+        if ( directoryExists( testsDir ) ) {
+            var testFiles = directoryList( testsDir, true, "path", "*.bx|*.bxs" );
+            for ( var tf in testFiles ) {
+                var tName = getFileFromPath( tf );
+                if ( findNoCase( "Test", tName ) || findNoCase( "runner", tName ) ) {
+                    arrayAppend( suites, {
+                        "file"      : tName,
+                        "path"      : replace( tf, arguments.repoPath & "/", "" ),
+                        "framework" : "TestBox / Custom Harness"
+                    } );
+                }
+            }
+        }
+        return suites;
+    }
+
+}

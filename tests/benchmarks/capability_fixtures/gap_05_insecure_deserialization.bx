@@ -1,0 +1,9 @@
+/**
+ * Recall Gap: Insecure Java deserialization (CWE-502)
+ */
+class {
+    function readPayload( required any inputStream ) {
+        var ois = createObject( "java", "java.io.ObjectInputStream" ).init( arguments.inputStream );
+        return ois.readObject();
+    }
+}

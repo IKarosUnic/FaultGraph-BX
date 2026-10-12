@@ -1,0 +1,124 @@
+/**
+ * ScenarioRegistry - Registro extensible y desacoplado de escenarios de caos.
+ *
+ * Mision:
+ *   Provee un catalogo dinamicamente extensible de escenarios de perturbacion
+ *   para el ChaosEngine, con validacion estricta de contratos.
+ *   Permite incorporar nuevos vectores de prueba (ej. fallos de red, tipos
+ *   estructurales o inyecciones adversarias) sin modificar el motor central.
+ */
+class {
+
+    public any function init( array initialScenarios = [] ) {
+        variables.scenarios = [];
+        if ( arrayLen( arguments.initialScenarios ) > 0 ) {
+            for ( var sc in arguments.initialScenarios ) {
+                registerScenario( sc );
+            }
+        } else {
+            loadDefaultScenarios();
+        }
+        return this;
+    }
+
+    /**
+     * Devuelve todos los escenarios registrados.
+     */
+    public array function getScenarios() {
+        return duplicate( variables.scenarios );
+    }
+
+    /**
+     * Obtiene un escenario especifico por su identificador.
+     */
+    public struct function getScenario( required string id ) {
+        for ( var sc in variables.scenarios ) {
+            if ( sc.id == arguments.id ) {
+                return duplicate( sc );
+            }
+        }
+        throw( type = "ScenarioRegistry.UnknownScenario", message = "Escenario no encontrado en el registro: " & arguments.id );
+    }
+
+    /**
+     * Registra un nuevo escenario con validacion formal de contrato.
+     */
+    public any function registerScenario( required struct scenario ) {
+        validateScenarioContract( arguments.scenario );
+        // Si ya existe con el mismo ID, se reemplaza; si no, se agrega
+        var existingIndex = 0;
+        for ( var i = 1; i <= arrayLen( variables.scenarios ); i++ ) {
+            if ( variables.scenarios[ i ].id == arguments.scenario.id ) {
+                existingIndex = i;
+                break;
+            }
+        }
+        if ( existingIndex > 0 ) {
+            variables.scenarios[ existingIndex ] = duplicate( arguments.scenario );
+        } else {
+            arrayAppend( variables.scenarios, duplicate( arguments.scenario ) );
+        }
+        return this;
+    }
+
+    /**
+     * Verifica si existe un escenario por ID.
+     */
+    public boolean function hasScenario( required string id ) {
+        for ( var sc in variables.scenarios ) {
+            if ( sc.id == arguments.id ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Numero total de escenarios activos.
+     */
+    public numeric function count() {
+        return arrayLen( variables.scenarios );
+    }
+
+    /**
+     * Restablece el registro al catalogo predeterminado de 8 escenarios del reto INCIDENT ZERO.
+     */
+    public any function reset() {
+        variables.scenarios = [];
+        loadDefaultScenarios();
+        return this;
+    }
+
+    // ------------------------------------------------------------------
+    // Privados
+    // ------------------------------------------------------------------
+
+    private void function loadDefaultScenarios() {
+        var defaults = [
+            { id: "S00_HEALTHY_CONTROL",            title: "Control: gateway sano",                     gatewayMode: "healthy", configMutation: "none",          amount: 129.90,     faultHint: "NONE" },
+            { id: "S01_GATEWAY_TIMEOUT",            title: "Gateway: timeout de lectura",               gatewayMode: "timeout", configMutation: "none",          amount: 129.90,     faultHint: "NUMERIC_CONTENT" },
+            { id: "S02_GATEWAY_NULL_RESPONSE",      title: "Gateway: respuesta nula",                   gatewayMode: "null",    configMutation: "none",          amount: 129.90,     faultHint: "NUMERIC_CONTENT" },
+            { id: "S03_GATEWAY_BROKEN_PAYLOAD",     title: "Gateway: payload roto (HTML 502)",          gatewayMode: "garbage", configMutation: "none",          amount: 129.90,     faultHint: "NUMERIC_CONTENT" },
+            { id: "S04_FALLBACK_CONFIG_MISSING",    title: "Caida + seccion fallback ausente",          gatewayMode: "timeout", configMutation: "drop_fallback",  amount: 129.90,     faultHint: "CONFIG_SHAPE" },
+            { id: "S05_FALLBACK_RATE_EMPTY",        title: "Caida + recargo configurado vacio",         gatewayMode: "timeout", configMutation: "empty_rate",    amount: 129.90,     faultHint: "NUMERIC_CONTENT" },
+            { id: "S06_AMOUNT_FORMATTED_STRING",    title: "Caida + monto formateado (1,299.50)",       gatewayMode: "timeout", configMutation: "numeric_rate",  amount: "1,299.50", faultHint: "NUMERIC_CONTENT" },
+            { id: "S07_FALLBACK_CONFIG_WRONG_TYPE",  title: "Caida + fallback con tipo equivocado",     gatewayMode: "timeout", configMutation: "wrong_type",    amount: 129.90,     faultHint: "CONFIG_SHAPE" }
+        ];
+        for ( var sc in defaults ) {
+            arrayAppend( variables.scenarios, sc );
+        }
+    }
+
+    private void function validateScenarioContract( required struct scenario ) {
+        var requiredKeys = [ "id", "title", "gatewayMode", "configMutation", "amount" ];
+        for ( var k in requiredKeys ) {
+            if ( !structKeyExists( arguments.scenario, k ) ) {
+                throw( type = "ScenarioRegistry.InvalidContract", message = "Escenario invalido: falta la clave obligatoria [" & k & "]" );
+            }
+        }
+        if ( !structKeyExists( arguments.scenario, "faultHint" ) ) {
+            arguments.scenario.faultHint = "NONE";
+        }
+    }
+
+}

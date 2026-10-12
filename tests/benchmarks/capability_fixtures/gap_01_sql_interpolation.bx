@@ -1,0 +1,9 @@
+/**
+ * Recall Gap: SQL Injection via CFML / BoxLang string interpolation (#id#)
+ * Semgrep/CodeQL detect this because they parse AST/templates, but FaultGraph only checks (&|+).
+ */
+class {
+    function findRecord( required string id ) {
+        return queryExecute( "SELECT * FROM orders WHERE order_id = '###arguments.id###'" );
+    }
+}

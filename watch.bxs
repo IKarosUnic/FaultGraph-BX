@@ -1,0 +1,35 @@
+/**
+ * FaultGraph-BX - CLI del Centinela en Tiempo Real (Live Sentinel).
+ *
+ * Monitorea un log en vivo, diagnostica excepciones al instante y genera
+ * suites de regresion automatizadas en segundo plano.
+ *
+ * Uso:
+ *   boxlang watch.bxs
+ *   set FAULTGRAPH_WATCH_LOG=c:/ruta/a/mi_app.log && boxlang watch.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+cfg = new config.Config( rootDir );
+sentinel = new models.LiveSentinel( cfg );
+
+sys = createObject( "java", "java.lang.System" );
+envLog = sys.getenv( "FAULTGRAPH_WATCH_LOG" );
+if ( isNull( envLog ) || len( trim( envLog ) ) == 0 ) {
+    envLog = sys.getenv( "FAULTGRAPH_LOG_PATH" );
+}
+
+logPath = ( !isNull( envLog ) && len( trim( envLog ) ) ) ? trim( envLog ) : ( rootDir & "target_app/sample_crash.log" );
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: CENTINELA EN TIEMPO REAL (WATCH)    " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Archivo log  : " & logPath );
+println( "IA Local     : " & ( cfg.isLocalAiAvailable() ? cfg.getLocalAi().model : "desactivado (offline)" ) );
+println( "Modo         : Monitoreo Continuo Activo" );
+println( "============================================================" );
+println( "" );
+
+// Ejecucion continua (maxIterations = 0)
+sentinel.watchLog( logPath, 1000, 0 );

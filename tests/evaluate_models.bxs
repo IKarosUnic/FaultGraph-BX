@@ -1,0 +1,31 @@
+/**
+ * FaultGraph-BX - Runner del Benchmark Comparativo de Paradigmas.
+ *
+ *   boxlang tests/evaluate_models.bxs
+ *
+ * Evalua:
+ *   1. Motor Determinista Puro
+ *   2. IA Local Pura (Qwen2.5-Coder 1.5B via Ollama)
+ *   3. Sistema Hibrido (Determinista + IA bajo demanda + Validador Independiente)
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+rootDir = replace( rootDir, "tests\", "" );
+rootDir = replace( rootDir, "tests/", "" );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+bench = new tests.benchmarks.ModelComparisonBenchmark( rootDir );
+results = bench.runComparison();
+bench.printReport( results );
+
+// Guardar reporte formal en reports/
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "model-comparison-benchmark.json";
+fileWrite( outputPath, jsonSerialize( results ) );
+println( "Metricas guardadas en: " & outputPath );
+println( "" );

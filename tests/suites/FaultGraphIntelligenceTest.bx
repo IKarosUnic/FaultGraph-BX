@@ -1,0 +1,302 @@
+/**
+ * FaultGraphIntelligenceTest - Suite B21: Inteligencia Estructural, Grafo de Conocimiento y Razonamiento Verificable.
+ *
+ * Valida de forma automatizada y reproducible:
+ *   1. TC-INTEL-01: Ingesta e incorporacion inteligente de repositorios (RepositoryIntake).
+ *   2. TC-INTEL-02: Construccion de grafo de conocimiento estructural con procedencia y certeza (StructuralKnowledgeGraph).
+ *   3. TC-INTEL-03: Extraccion de subgrafos pertinentes y acotados a k-saltos para modelos de razonamiento.
+ *   4. TC-INTEL-04: Puente e interoperabilidad con Graphify CLI y degradacion nativa (GraphifyBridge).
+ *   5. TC-INTEL-05: Auditoria formal de modelo, compatibilidad y licencia Apache 2.0 (KGWReasoningEngine).
+ *   6. TC-INTEL-06: Formulacion de hipotesis asistidas por subgrafo y deteccion de interacciones problematicas.
+ *   7. TC-INTEL-07: Coordinacion multi-motor, consenso, contradiccion y deduplicacion (MultiEngineCoordinator).
+ *   8. TC-INTEL-08: Reconstruccion de la cadena causal, secuencia de llamadas y rutas observadas vs inferidas (CausalDiagnosisEngine).
+ *   9. TC-INTEL-09: Clasificacion formal en 5 niveles canonicos (FormalVerificationGate).
+ *  10. TC-INTEL-10: Evaluacion y reporte comparativo de los 4 Paradigmas (FourParadigmBenchmark).
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testRepositoryIntake();
+        testStructuralKnowledgeGraphBasics();
+        testSubgraphExtraction();
+        testGraphifyBridge();
+        testKgwModelProfile();
+        testKgwHypothesisFormulation();
+        testMultiEngineCoordination();
+        testCausalChainReconstruction();
+        testFiveTierClassification();
+        testFourParadigmBenchmark();
+    }
+
+    private void function testRepositoryIntake() {
+        var id = "TC-INTEL-01";
+        var scenario = "Ingesta inteligente de repositorio con deteccion de manifiestos, puntos de entrada y SPOFs";
+        var t0 = getTickCount();
+        try {
+            var intake = new models.intake.RepositoryIntake( variables.config );
+            var res = intake.onboardRepository( variables.rootDir );
+
+            variables.assert.isTrue( res.ok, "Onboarding debe ser exitoso" );
+            variables.assert.isTrue( structKeyExists( res, "manifests" ), "Debe incluir manifiestos" );
+            variables.assert.isTrue( res.manifests.boxlang.found, "Debe detectar box.json de BoxLang" );
+            variables.assert.isTrue( arrayLen( res.structure.entryPoints ) > 0, "Debe detectar puntos de entrada" );
+            variables.assert.isTrue( arrayLen( res.criticalPoints ) > 0, "Debe identificar puntos criticos (SPOFs)" );
+            variables.assert.isTrue( findNoCase( "no confiables", res.untrustedDataWarning ) > 0, "Debe advertir sobre datos no confiables" );
+
+            variables.reporter.record( id, scenario, "Onboarding repo", "Manifiestos y SPOFs identificados", "OK (" & arrayLen( res.criticalPoints ) & " SPOFs)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Onboarding repo", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testStructuralKnowledgeGraphBasics() {
+        var id = "TC-INTEL-02";
+        var scenario = "Grafo estructural con nodos, procedencia y 3 estados de certeza (OBSERVED, INFERRED, DYNAMICALLY_VERIFIED)";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.graph.StructuralKnowledgeGraph( variables.config );
+
+            var n1 = graph.addNode( "Comp:PaymentService", "PaymentService", "CLASS", "target_app/PaymentService.bx", 10, 85 );
+            var n2 = graph.addNode( "Func:fallbackCharge", "fallbackCharge", "FUNCTION", "target_app/PaymentService.bx", 57, 75 );
+
+            var e1 = graph.addEdge( "Comp:PaymentService", "Func:fallbackCharge", "CALLS", "OBSERVED", 1.0, "target_app/PaymentService.bx", 50 );
+            var e2 = graph.addEdge( "Func:fallbackCharge", "Comp:PaymentService", "AFFECTS", "INFERRED", 0.85, "target_app/PaymentService.bx", 60 );
+            var e3 = graph.addEdge( "Comp:PaymentService", "Func:fallbackCharge", "CALLS", "DYNAMICALLY_VERIFIED", 1.0, "target_app/PaymentService.bx", 50, "Ejecutado por ChaosEngine" );
+
+            variables.assert.isEqual( 2, graph.getNodeCount(), "2 nodos agregados" );
+            variables.assert.isEqual( 2, graph.getEdgeCount(), "2 aristas unicas tras deduplicacion y promocion" );
+            variables.assert.isEqual( "DYNAMICALLY_VERIFIED", e1.status, "Arista promovida a DYNAMICALLY_VERIFIED" );
+
+            var mermaid = graph.exportToMermaid();
+            variables.assert.isTrue( findNoCase( "flowchart TD", mermaid ) > 0, "Exporta sintaxis Mermaid valida" );
+
+            variables.reporter.record( id, scenario, "Operaciones de grafo", "Nodos y relaciones con procedencia", "PASS (Mermaid y estados verificados)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Operaciones de grafo", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testSubgraphExtraction() {
+        var id = "TC-INTEL-03";
+        var scenario = "Extraccion acotada de subgrafos pertinentes para el motor de razonamiento (k-saltos)";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.graph.StructuralKnowledgeGraph( variables.config );
+            graph.addNode( "A", "A", "CLASS" );
+            graph.addNode( "B", "B", "FUNCTION" );
+            graph.addNode( "C", "C", "SERVICE" );
+            graph.addNode( "D", "D", "EXTERNAL" );
+
+            graph.addEdge( "A", "B", "CALLS" );
+            graph.addEdge( "B", "C", "DEPENDS_ON" );
+            graph.addEdge( "C", "D", "INVOKES" );
+
+            var sub1 = graph.extractSubgraph( [ "A" ], 1 );
+            variables.assert.isEqual( 2, sub1.nodeCount, "Subgrafo a 1 salto desde A incluye A y B" );
+            variables.assert.isEqual( 1, sub1.edgeCount, "Subgrafo a 1 salto incluye 1 arista" );
+
+            var sub2 = graph.extractSubgraph( [ "A" ], 2 );
+            variables.assert.isEqual( 3, sub2.nodeCount, "Subgrafo a 2 saltos desde A incluye A, B y C" );
+
+            variables.reporter.record( id, scenario, "Extraccion de subgrafo", "k-saltos exactos", "PASS (1 y 2 saltos)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Extraccion de subgrafo", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testGraphifyBridge() {
+        var id = "TC-INTEL-04";
+        var scenario = "Puente con Graphify CLI y degradacion fluida al extractor estructural nativo BoxLang";
+        var t0 = getTickCount();
+        try {
+            var bridge = new models.graph.GraphifyBridge( variables.config );
+            var extractRes = bridge.extractAndIngest( variables.rootDir & "target_app" );
+
+            variables.assert.isTrue( extractRes.ok, "Extracion e ingesta exitosa" );
+            variables.assert.isTrue( extractRes.nodesLoaded > 0, "Carga nodos de target_app" );
+
+            var queryRes = bridge.queryGraph( "PaymentService", 3 );
+            variables.assert.isTrue( arrayLen( queryRes ) > 0, "Query encuentra nodo PaymentService" );
+
+            variables.reporter.record( id, scenario, "Graphify Bridge", "Ingesta y consultas sobre grafo", "PASS (" & extractRes.source & ")", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Graphify Bridge", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testKgwModelProfile() {
+        var id = "TC-INTEL-05";
+        var scenario = "Auditoria formal de KGW 2.5–3B: modelo, licencia Apache 2.0 y requisitos de hardware";
+        var t0 = getTickCount();
+        try {
+            var kgw = new models.reasoning.KGWReasoningEngine( variables.config );
+            var profile = kgw.getModelAuditProfile();
+
+            variables.assert.isEqual( "Apache 2.0 (Permisiva - Comercial y Open-Source)", profile.license, "Licencia Apache 2.0 verificada" );
+            variables.assert.isEqual( "AUDITED_AND_COMPATIBLE", profile.status, "Modelo auditado y compatible" );
+            variables.assert.isEqual( "qwen2.5-coder:7b", profile.configuredModel, "Modelo principal configurado es Qwen2.5-Coder:7B" );
+            variables.assert.isEqual( "deepseek-r1:7b", profile.deepReasoningModel, "Modelo de investigacion profunda es DeepSeek-R1:7B" );
+            variables.assert.isTrue( structKeyExists( profile.resourceRequirements, "vramRecommended" ), "Presupuesto VRAM documentado" );
+
+            variables.reporter.record( id, scenario, "Auditoria KGW 7B/R1", "Perfil y licencia confirmados", "PASS (" & profile.configuredModel & " + " & profile.deepReasoningModel & ")", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Auditoria KGW 7B/R1", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testKgwHypothesisFormulation() {
+        var id = "TC-INTEL-06";
+        var scenario = "Formulacion de hipotesis causales asistidas por subgrafo y deteccion de interacciones problematicas";
+        var t0 = getTickCount();
+        try {
+            var graph = new models.graph.StructuralKnowledgeGraph( variables.config );
+            graph.addNode( "PaymentService", "PaymentService", "CLASS" );
+            graph.addNode( "fallbackCharge", "fallbackCharge", "FUNCTION" );
+            graph.addEdge( "PaymentService", "fallbackCharge", "FALLS_BACK_TO", "OBSERVED", 1.0 );
+
+            var kgw = new models.reasoning.KGWReasoningEngine( variables.config, null, graph );
+            var subG = graph.extractSubgraph( [ "PaymentService" ], 1 );
+
+            var hypoRes = kgw.formulateHypotheses(
+                { "code": "NULL_CONFIG_DEREF", "sampleError": "Key [fallback] was not found in struct." },
+                subG
+            );
+
+            variables.assert.isTrue( hypoRes.ok, "Formulacion de hipotesis exitosa" );
+            variables.assert.isTrue( arrayLen( hypoRes.hypotheses ) > 0, "Debe generar al menos 1 hipotesis" );
+            variables.assert.isEqual( "NULL_CONFIG_DEREF", hypoRes.hypotheses[ 1 ].code, "Codigo de defecto coincide" );
+
+            var interactions = kgw.detectProblematicInteractions( subG );
+            variables.assert.isTrue( arrayLen( interactions ) > 0, "Debe detectar interaccion FALLS_BACK_TO como critica" );
+
+            // Validacion de escalado quirurgico a Deep Investigation (DeepSeek-R1)
+            var shouldDeep = kgw.shouldEscalateToDeepInvestigation( { "code": "NULL_CONFIG_DEREF" }, subG );
+            variables.assert.isTrue( shouldDeep, "Debe recomendar escalado profundo ante rutas FALLS_BACK_TO" );
+
+            var deepHypo = kgw.formulateDeepCausalHypothesis(
+                { "code": "NULL_CONFIG_DEREF", "sampleError": "Unhandled exception inside catch block" },
+                subG
+            );
+            variables.assert.isTrue( isStruct( deepHypo ) && len( deepHypo.rootCause ) > 0, "Hipotesis profunda R1 estructurada" );
+            variables.assert.isTrue( len( deepHypo.thoughtTrace ) > 0, "Traza de pensamiento CoT preservada" );
+
+            variables.reporter.record( id, scenario, "Razonamiento KGW", "Hipotesis, R1 CoT e interacciones", "PASS", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Razonamiento KGW", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testMultiEngineCoordination() {
+        var id = "TC-INTEL-07";
+        var scenario = "Coordinacion multi-motor: seleccion dinamica, consolidacion de hallazgos y deteccion de consensos";
+        var t0 = getTickCount();
+        try {
+            var coordinator = new models.orchestration.MultiEngineCoordinator( variables.config );
+
+            var mockContext = {
+                "staticFindings": [
+                    { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL", "line": 60, "snippet": "config.fallback.", "risk": "Desreferencia nula" }
+                ],
+                "chaosFailures": [
+                    { "code": "NULL_CONFIG_DEREF", "errorLine": 60, "errorMessage": "Key [fallback] not found" }
+                ]
+            };
+
+            var coordRes = coordinator.coordinateAnalysis( "target_app/PaymentService.bx", "BoxLang", mockContext );
+
+            variables.assert.isTrue( coordRes.ok, "Coordinacion exitosa" );
+            variables.assert.isEqual( 1, coordRes.totalUnique, "Deduplica hallazgos con misma causa y linea" );
+            variables.assert.isTrue( arrayLen( coordRes.agreements ) == 1, "Detecta acuerdo unanime entre Static y Chaos" );
+            variables.assert.isTrue( coordRes.consolidated[ 1 ].confidenceScore >= 0.90, "Confianza escalada por consenso" );
+
+            variables.reporter.record( id, scenario, "Coordinacion de motores", "Deduplicacion y consenso", "PASS (Confianza: " & coordRes.consolidated[ 1 ].confidenceScore & ")", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Coordinacion de motores", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testCausalChainReconstruction() {
+        var id = "TC-INTEL-08";
+        var scenario = "Reconstruccion de la cadena causal: flujo de llamadas, punto de origen y distincion OBSERVED vs INFERRED";
+        var t0 = getTickCount();
+        try {
+            var engine = new models.diagnosis.CausalDiagnosisEngine( variables.config );
+
+            var mockCause = {
+                "code"        : "TYPE_MISMATCH_NUMERIC",
+                "sampleError" : "Can't cast [2.5%] to a Number",
+                "location"    : "target_app/PaymentService.bx:60"
+            };
+
+            var chain = engine.reconstructCausalChain( mockCause, { "id": "S06" } );
+
+            variables.assert.isEqual( "TYPE_MISMATCH_NUMERIC", chain.causeCode, "Causa correcta" );
+            variables.assert.isTrue( arrayLen( chain.callSequence ) == 5, "Secuencia de 5 llamadas reconstruida" );
+            variables.assert.isEqual( "OBSERVED", chain.originComponent.pathStatus, "Componente de origen marcado como OBSERVED" );
+            variables.assert.isTrue( chain.observedVsInferred.observedStepsCount >= 4, "Pasos observados discriminados" );
+
+            variables.reporter.record( id, scenario, "Cadena causal", "Flujo y procedencia reconstruidos", "Flujo y procedencia reconstruidos", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Cadena causal", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testFiveTierClassification() {
+        var id = "TC-INTEL-09";
+        var scenario = "Clasificacion formal en 5 niveles: CONFIRMED_ERROR, PROBABLE_DEFECT, POTENTIAL_RISK, IMPROVEMENT, INCONCLUSIVE";
+        var t0 = getTickCount();
+        try {
+            var gate = new models.verification.FormalVerificationGate( variables.config );
+
+            var c1 = gate.classifyFinding( { "code": "NULL_CONFIG_DEREF", "severity": "CRITICAL" }, true );
+            variables.assert.isEqual( "CONFIRMED_ERROR", c1.level, "Fallo reproducible es CONFIRMED_ERROR" );
+
+            var c2 = gate.classifyFinding( { "code": "UNGUARDED_CALL", "severity": "HIGH" }, false, 0.85 );
+            variables.assert.isEqual( "PROBABLE_DEFECT", c2.level, "Evidencia alta sin reproduccion directa es PROBABLE_DEFECT" );
+
+            var c3 = gate.classifyFinding( { "code": "RETRY_POLICY_MISSING", "severity": "MEDIUM" }, false, 0.70 );
+            variables.assert.isEqual( "POTENTIAL_RISK", c3.level, "Severidad media es POTENTIAL_RISK" );
+
+            var c4 = gate.classifyFinding( { "code": "CACHE_OPTIMIZATION", "severity": "INFO" }, false );
+            variables.assert.isEqual( "RECOMMENDED_IMPROVEMENT", c4.level, "Sugerencia es RECOMMENDED_IMPROVEMENT" );
+
+            var c5 = gate.classifyFinding( { "code": "INSUFFICIENT_DATA", "severity": "LOW" }, false, 0.30 );
+            variables.assert.isEqual( "INCONCLUSIVE", c5.level, "Datos insuficientes es INCONCLUSIVE" );
+
+            variables.reporter.record( id, scenario, "5 niveles canonicos", "Clasificacion formal exhaustiva", "PASS (5/5 niveles verificados)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "5 niveles canonicos", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testFourParadigmBenchmark() {
+        var id = "TC-INTEL-10";
+        var scenario = "Ejecucion del Benchmark comparativo formal entre los 4 Paradigmas (A, B, C, D) con metricas";
+        var t0 = getTickCount();
+        try {
+            var bench = new tests.benchmarks.FourParadigmBenchmark( variables.rootDir );
+            var res = bench.runBenchmark();
+
+            variables.assert.isTrue( structKeyExists( res, "paradigmA" ), "Paradigma A presente" );
+            variables.assert.isTrue( structKeyExists( res, "paradigmB" ), "Paradigma B presente" );
+            variables.assert.isTrue( structKeyExists( res, "paradigmC" ), "Paradigma C presente" );
+            variables.assert.isTrue( structKeyExists( res, "paradigmD" ), "Paradigma D presente" );
+
+            variables.assert.isEqual( 100.0, res.paradigmD.accuracyPct, "Paradigma D alcanza 100% Top-1 Precision" );
+            variables.assert.isEqual( 0, res.paradigmD.falsePositives, "Paradigma D tiene 0 falsos positivos" );
+
+            variables.reporter.record( id, scenario, "Benchmark 4 Paradigmas", "Metricas reproducibles A, B, C, D", "PASS (100% Precision en D)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Benchmark 4 Paradigmas", "Exito", e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

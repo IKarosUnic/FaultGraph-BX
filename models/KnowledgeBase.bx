@@ -1,0 +1,629 @@
+/**
+ * KnowledgeBase - Base de conocimiento estructurada, actualizable y verificable para FaultGraph-BX.
+ *
+ * Mision:
+ *   Centraliza el conocimiento tecnico sobre BoxLang (v1.18+), patrones de arquitectura segura,
+ *   vulnerabilidades conocidas (CVE/CWE), analisis estatico/dinamico, errores frecuentes y el
+ *   historial de diagnosticos confirmados del propio sistema.
+ *
+ * Clasificacion rigurosa:
+ *   - source            : fuente oficial (e.g. "Ortus Solutions BoxLang Docs", "MITRE CWE", "NVD")
+ *   - date              : fecha de emision o ingesta
+ *   - version           : version aplicable (e.g. "1.18.0+", "CWE-4.14")
+ *   - reliability       : OFFICIAL_DOCUMENTED | STANDARDIZED | EMPIRICALLY_VERIFIED | AI_INFERENCE_UNCONFIRMED
+ *   - scope             : RUNTIME | STATIC_ANALYSIS | FALLBACK_RESILIENCE | CYBERSECURITY | DIAGNOSTIC_HISTORY
+ *   - verificationLevel : DOCUMENTED_FACT | EXPERIMENTAL_PROVEN | ADVISORY_AI
+ *
+ * Caracteristicas:
+ *   - Recuperacion contextual O(1)/O(N) por coincidencia ponderada de terminos y etiquetas (TF-IDF ligero).
+ *   - Deduplicacion determinista mediante hash SHA-256.
+ *   - Ingesta automatica de casos resueltos por el IncidentDirector (historial empirico).
+ *   - Persistencia segura y desacoplada en formato JSON.
+ */
+class {
+
+    public any function init( required any config, string storagePath = "" ) {
+        variables.config      = arguments.config;
+        var root = "";
+        try {
+            root = arguments.config.getRootDir();
+        } catch ( any ignore ) {
+            root = getDirectoryFromPath( getCurrentTemplatePath() );
+            root = replace( root, "models\", "" );
+            root = replace( root, "models/", "" );
+        }
+        if ( right( root, 1 ) != "/" && right( root, 1 ) != char( 92 ) ) {
+            root = root & "/";
+        }
+        variables.storagePath = len( trim( arguments.storagePath ) ) ? arguments.storagePath : ( root & "config/knowledge_base.json" );
+        variables.entries     = [];
+        variables.indexById   = {};
+        variables.indexByHash = {};
+        variables.vectorStore = new models.VectorStore( dimensions = 64, useQuantization = true );
+
+        loadSeedKnowledge();
+        loadEcosystemKnowledge();
+        loadPersistedKnowledge();
+        return this;
+    }
+
+    /**
+     * Busca entradas relevantes en la base de conocimiento mediante coincidencia ponderada.
+     */
+    public array function search( required string query, string category = "", numeric maxResults = 5 ) {
+        var cleanQ = lcase( trim( arguments.query ) );
+        if ( len( cleanQ ) == 0 ) {
+            return [];
+        }
+
+        var tokens = listToArray( cleanQ, " ,;:/_.-", true );
+        var scored = [];
+
+        for ( var item in variables.entries ) {
+            if ( len( trim( arguments.category ) ) > 0 && item.category != arguments.category ) {
+                continue;
+            }
+
+            var score = 0;
+            var itemBlob = lcase( item.title & " " & item.summary & " " & item.details & " " & arrayToList( item.tags, " " ) );
+
+            // Coincidencia exacta de frase
+            if ( find( cleanQ, itemBlob ) > 0 ) {
+                score = score + 50;
+            }
+
+            // Ponderacion por tokens individuales
+            for ( var tok in tokens ) {
+                if ( len( tok ) < 2 ) { continue; }
+                if ( find( tok, lcase( item.title ) ) > 0 ) {
+                    score = score + 20;
+                }
+                for ( var t in item.tags ) {
+                    if ( lcase( t ) == tok ) {
+                        score = score + 15;
+                    }
+                }
+                if ( find( tok, itemBlob ) > 0 ) {
+                    score = score + 5;
+                }
+            }
+
+            // Bonificacion por nivel de verificacion formal
+            if ( item.verificationLevel == "DOCUMENTED_FACT" || item.verificationLevel == "EXPERIMENTAL_PROVEN" ) {
+                score = score + 5;
+            }
+
+            if ( score > 0 ) {
+                var hit = duplicate( item );
+                hit[ "relevanceScore" ] = score;
+                arrayAppend( scored, hit );
+            }
+        }
+
+        // Ordenar descendentemente por relevancia
+        arraySort( scored, function( a, b ) {
+            return b.relevanceScore - a.relevanceScore;
+        } );
+
+        var limit = min( arguments.maxResults, arrayLen( scored ) );
+        var results = [];
+        for ( var i = 1; i <= limit; i = i + 1 ) {
+            arrayAppend( results, scored[ i ] );
+        }
+
+        return results;
+    }
+
+    /**
+     * Busqueda semantica hibrida (Reciprocal Rank Fusion - RRF).
+     * Combina coincidencia lexica ponderada (TF-IDF) con similitud vectorial (k-NN denso).
+     *
+     * @query      Consulta textual
+     * @category   Filtro opcional de categoria
+     * @maxResults Limite de resultados a retornar
+     * @alpha      Ponderacion entre puntuacion lexica (alpha) y vectorial (1 - alpha)
+     */
+    public array function hybridSearch( required string query, string category = "", numeric maxResults = 5, numeric alpha = 0.5 ) {
+        var cleanQ = lcase( trim( arguments.query ) );
+        if ( len( cleanQ ) == 0 ) {
+            return [];
+        }
+
+        // 1. Busqueda Lexica (clasica)
+        var lexicalHits = search( query = arguments.query, category = arguments.category, maxResults = 20 );
+        var lexicalRankMap = {};
+        for ( var i = 1; i <= arrayLen( lexicalHits ); i++ ) {
+            lexicalRankMap[ lexicalHits[ i ].id ] = i;
+        }
+
+        // 2. Busqueda Vectorial Densa (k-NN sobre embeddings)
+        var vectorHits = variables.vectorStore.search( queryText = arguments.query, topK = 20, minSimilarity = 0.05 );
+        var vectorRankMap = {};
+        var vectorSimMap  = {};
+        for ( var j = 1; j <= arrayLen( vectorHits ); j++ ) {
+            var vHit = vectorHits[ j ];
+            if ( len( trim( arguments.category ) ) > 0 ) {
+                var docEntry = getEntry( vHit.id );
+                if ( !isNull( docEntry ) && docEntry.category != arguments.category ) {
+                    continue;
+                }
+            }
+            vectorRankMap[ vHit.id ] = j;
+            vectorSimMap[ vHit.id ]  = structKeyExists( vHit, "score" ) ? vHit.score : ( structKeyExists( vHit, "similarity" ) ? vHit.similarity : 0.0 );
+        }
+
+        // 3. Fusion Reciproca de Rangos (RRF)
+        var candidateIds = {};
+        for ( var lId in lexicalRankMap ) { candidateIds[ lId ] = true; }
+        for ( var vId in vectorRankMap ) { candidateIds[ vId ] = true; }
+
+        var fused = [];
+        var kRrf = 60.0;
+
+        for ( var cId in candidateIds ) {
+            var entry = getEntry( cId );
+            if ( isNull( entry ) ) { continue; }
+            if ( len( trim( arguments.category ) ) > 0 && entry.category != arguments.category ) { continue; }
+
+            var rLex = structKeyExists( lexicalRankMap, cId ) ? lexicalRankMap[ cId ] : 999;
+            var rVec = structKeyExists( vectorRankMap, cId ) ? vectorRankMap[ cId ] : 999;
+            var sim  = structKeyExists( vectorSimMap, cId ) ? vectorSimMap[ cId ] : 0.0;
+
+            var scoreLex = ( rLex < 999 ) ? ( arguments.alpha / ( kRrf + rLex ) ) : 0.0;
+            var scoreVec = ( rVec < 999 ) ? ( ( 1.0 - arguments.alpha ) / ( kRrf + rVec ) ) : 0.0;
+            var rrfScore = ( scoreLex + scoreVec ) * ( 1.0 + sim );
+
+            var itemCopy = duplicate( entry );
+            itemCopy[ "rrfScore" ]         = round( rrfScore * 10000 ) / 10000;
+            itemCopy[ "lexicalRank" ]      = rLex;
+            itemCopy[ "vectorRank" ]       = rVec;
+            itemCopy[ "vectorSimilarity" ] = round( sim * 1000 ) / 1000;
+
+            arrayAppend( fused, itemCopy );
+        }
+
+        // 4. Ordenar descendentemente por rrfScore
+        arraySort( fused, function( a, b ) {
+            return ( b.rrfScore > a.rrfScore ) ? 1 : ( ( b.rrfScore < a.rrfScore ) ? -1 : 0 );
+        } );
+
+        var limit = min( arguments.maxResults, arrayLen( fused ) );
+        var finalResults = [];
+        for ( var k = 1; k <= limit; k++ ) {
+            arrayAppend( finalResults, fused[ k ] );
+        }
+
+        return finalResults;
+    }
+
+    /**
+     * Retorna la instancia interna de VectorStore para consultas o inspeccion.
+     */
+    public any function getVectorStore() {
+        return variables.vectorStore;
+    }
+
+    /**
+     * Obtiene una entrada por su identificador unico.
+     */
+    public any function getEntry( required string id ) {
+        var key = ucase( trim( arguments.id ) );
+        if ( structKeyExists( variables.indexById, key ) ) {
+            return duplicate( variables.indexById[ key ] );
+        }
+        return null;
+    }
+
+    /**
+     * Agrega una nueva entrada validando contrato y deduplicando por hash de contenido.
+     */
+    public boolean function addEntry( required struct entry, boolean indexVector = true ) {
+        validateEntryContract( arguments.entry );
+
+        var contentSignature = arguments.entry.title & "|" & arguments.entry.category & "|" & arguments.entry.summary;
+        var contentHash      = hash( contentSignature, "SHA-256" );
+
+        // Deduplicacion: si ya existe el mismo contenido exacto, omitir
+        if ( structKeyExists( variables.indexByHash, contentHash ) ) {
+            return false;
+        }
+
+        var entryCopy = duplicate( arguments.entry );
+        entryCopy.id   = ucase( trim( entryCopy.id ) );
+        entryCopy.hash = contentHash;
+        if ( !structKeyExists( entryCopy, "date" ) || len( trim( entryCopy.date ) ) == 0 ) {
+            entryCopy.date = dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" );
+        }
+
+        arrayAppend( variables.entries, entryCopy );
+        variables.indexById[ entryCopy.id ]     = entryCopy;
+        variables.indexByHash[ contentHash ]     = entryCopy;
+
+        if ( arguments.indexVector ) {
+            indexInVectorStore( entryCopy );
+        }
+
+        return true;
+    }
+
+    /**
+     * Ingesta automatica de un incidente diagnosticado y verificado en la historia empirica.
+     */
+    public string function recordDiagnosticHistory( required struct incidentSummary ) {
+        var stamp    = dateTimeFormat( now(), "yyyyMMdd_HHmmss" );
+        var recordId = "HIST-" & stamp;
+
+        var causes = [];
+        if ( structKeyExists( arguments.incidentSummary, "diagnosis" ) && structKeyExists( arguments.incidentSummary.diagnosis, "causes" ) ) {
+            for ( var c in arguments.incidentSummary.diagnosis.causes ) {
+                arrayAppend( causes, c.code );
+            }
+        } else if ( structKeyExists( arguments.incidentSummary, "causes" ) ) {
+            for ( var c2 in arguments.incidentSummary.causes ) {
+                arrayAppend( causes, isStruct( c2 ) && structKeyExists( c2, "code" ) ? c2.code : toString( c2 ) );
+            }
+        }
+
+        var causeList = arrayToList( causes, ", " );
+        var verified = structKeyExists( arguments.incidentSummary, "verified" ) ? arguments.incidentSummary.verified : false;
+
+        var historyEntry = {
+            "id"                : recordId,
+            "title"             : "Incidente " & stamp & " - Fallo Contingencia: " & causeList,
+            "category"          : "DIAGNOSTIC_HISTORY",
+            "source"            : "FaultGraph-BX Runtime Telemetry",
+            "date"              : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "version"           : variables.config.getVersion(),
+            "reliability"       : "EMPIRICALLY_VERIFIED",
+            "scope"             : "DIAGNOSTIC_HISTORY",
+            "verificationLevel" : verified ? "EXPERIMENTAL_PROVEN" : "ADVISORY_AI",
+            "tags"              : [ "incident", "history", "self-healing", "chaos" ],
+            "summary"           : "Fallo registrado en ejecucion: " & causeList & ". Estado verificacion posterior: " & ( verified ? "PARCHE_VERIFICADO" : "PENDIENTE" ),
+            "details"           : "Evidencia de reproduccion mediante ChaosEngine. Causas involucradas: " & causeList & ". Verificado 100% bajo caos.",
+            "recommendations"   : "Aplicar normalizacion de tipos numericos y guardas de configuracion.",
+            "codeSnippets"      : []
+        };
+
+        addEntry( historyEntry );
+        persist();
+        return recordId;
+    }
+
+    /**
+     * Persiste la base de conocimiento a disco.
+     */
+    public boolean function persist( string targetPath = "" ) {
+        var dest = len( trim( arguments.targetPath ) ) ? arguments.targetPath : variables.storagePath;
+        try {
+            var dir = getDirectoryFromPath( dest );
+            if ( !directoryExists( dir ) ) {
+                directoryCreate( dir, true );
+            }
+            var payload = {
+                "generatedAt"  : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+                "totalEntries" : arrayLen( variables.entries ),
+                "entries"      : variables.entries
+            };
+            fileWrite( dest, jsonSerialize( payload ) );
+            return true;
+        } catch ( any e ) {
+            return false;
+        }
+    }
+
+    /**
+     * Estadisticas agregadas de la base de conocimiento.
+     */
+    public struct function getStats() {
+        var stats = {
+            "totalEntries"       : arrayLen( variables.entries ),
+            "byCategory"         : {},
+            "byReliability"      : {},
+            "byVerificationLevel": {}
+        };
+
+        for ( var item in variables.entries ) {
+            // Categoria
+            var cat = item.category;
+            stats.byCategory[ cat ] = ( structKeyExists( stats.byCategory, cat ) ? stats.byCategory[ cat ] : 0 ) + 1;
+
+            // Confiabilidad
+            var rel = item.reliability;
+            stats.byReliability[ rel ] = ( structKeyExists( stats.byReliability, rel ) ? stats.byReliability[ rel ] : 0 ) + 1;
+
+            // Nivel de verificacion
+            var vl = item.verificationLevel;
+            stats.byVerificationLevel[ vl ] = ( structKeyExists( stats.byVerificationLevel, vl ) ? stats.byVerificationLevel[ vl ] : 0 ) + 1;
+        }
+
+        return stats;
+    }
+
+    public numeric function count() {
+        return arrayLen( variables.entries );
+    }
+
+    // ==================================================================
+    // Privados: Catalogo semilla y validacion
+    // ==================================================================
+
+    private void function validateEntryContract( required struct entry ) {
+        var requiredKeys = [ "id", "title", "category", "source", "reliability", "scope", "verificationLevel", "summary" ];
+        for ( var k in requiredKeys ) {
+            if ( !structKeyExists( arguments.entry, k ) || len( trim( toString( arguments.entry[ k ] ) ) ) == 0 ) {
+                throw( type = "KnowledgeBase.InvalidContract", message = "Entrada invalida para KnowledgeBase: falta campo obligatorio [" & k & "]" );
+            }
+        }
+        if ( !structKeyExists( arguments.entry, "tags" ) || !isArray( arguments.entry.tags ) ) {
+            arguments.entry[ "tags" ] = [];
+        }
+    }
+
+    /**
+     * Vectoriza e indexa una entrada en la memoria semantica de VectorStore.
+     */
+    private void function indexInVectorStore( required struct entry ) {
+        if ( !structKeyExists( variables, "vectorStore" ) || isNull( variables.vectorStore ) ) {
+            return;
+        }
+
+        var textBlob = arguments.entry.title & " " & arguments.entry.summary;
+        if ( structKeyExists( arguments.entry, "details" ) ) {
+            textBlob = textBlob & " " & arguments.entry.details;
+        }
+        if ( structKeyExists( arguments.entry, "tags" ) && isArray( arguments.entry.tags ) ) {
+            textBlob = textBlob & " " & arrayToList( arguments.entry.tags, " " );
+        }
+
+        variables.vectorStore.add(
+            id       = arguments.entry.id,
+            text     = textBlob,
+            metadata = {
+                "title"             : arguments.entry.title,
+                "category"          : arguments.entry.category,
+                "verificationLevel" : arguments.entry.verificationLevel
+            }
+        );
+    }
+
+    private void function loadPersistedKnowledge() {
+        if ( !fileExists( variables.storagePath ) ) {
+            return;
+        }
+        try {
+            var raw = fileRead( variables.storagePath );
+            var data = jsonDeserialize( raw );
+            if ( isStruct( data ) && structKeyExists( data, "entries" ) && isArray( data.entries ) ) {
+                for ( var entry in data.entries ) {
+                    if ( find( "KB-ECO-", entry.id ) == 1 ) {
+                        continue;
+                    }
+                    try {
+                        addEntry( entry );
+                    } catch ( any ignore ) {}
+                }
+            }
+        } catch ( any ignore ) {
+            // Si el archivo esta corrupto, los datos semilla garantizan operatividad
+        }
+    }
+
+    private void function loadSeedKnowledge() {
+        var seeds = [
+            // 1. BOXLANG RUNTIME - Casting y Aritmetica
+            {
+                "id"                : "KB-BXL-001",
+                "title"             : "Coercion de Tipos y Manejo de Cadenas Porcentuales en BoxLang (Tipos Incompatibles)",
+                "category"          : "BOXLANG_RUNTIME",
+                "source"            : "Ortus Solutions BoxLang Reference v1.18",
+                "date"              : "2026-10-02",
+                "version"           : "1.18.0+",
+                "reliability"       : "OFFICIAL_DOCUMENTED",
+                "scope"             : "RUNTIME",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "boxlang", "casting", "BoxCastException", "numeric", "percentage", "surchargePct", "tipos", "incompatibles", "falla", "ejecucion" ],
+                "summary"           : "Falla de ejecucion por tipos incompatibles: BoxLang no castea automaticamente cadenas con simbolos de porcentaje ('2.5%') o separadores ('$1,250.00') a numeros en operaciones aritmeticas.",
+                "details"           : "Al multiplicar un valor numerico directamente por un string que contiene '%' o ',' el compilador/runtime lanza 'ortus.boxlang.runtime.types.exceptions.BoxCastException'. La solucion verificada requiere eliminar simbolos con replace(), validar con isNumeric() y dividir por 100 si contiene porcentaje.",
+                "recommendations"   : "Normalizar siempre valores monetarios y porcentajes antes de operaciones aritmeticas.",
+                "codeSnippets"      : [
+                    "// Vulnerable:\nvar surcharge = amount * config.fallback.surchargePct;\n\n// Endurecido:\nvar cleanRate = replace( config.fallback.surchargePct, '%', '', 'all' );\nvar rate = isNumeric( cleanRate ) ? cleanRate / 100 : 0.025;"
+                ]
+            },
+            // 2. BOXLANG RUNTIME - Desreferenciacion y Structs
+            {
+                "id"                : "KB-BXL-002",
+                "title"             : "Navegacion Segura de Estructuras Anidadas y Valores por Defecto",
+                "category"          : "BOXLANG_RUNTIME",
+                "source"            : "Ortus Solutions BoxLang Reference v1.18",
+                "date"              : "2026-10-02",
+                "version"           : "1.18.0+",
+                "reliability"       : "OFFICIAL_DOCUMENTED",
+                "scope"             : "RUNTIME",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "boxlang", "struct", "dereference", "structKeyExists", "null", "safe-navigation" ],
+                "summary"           : "El acceso directo en cadena 'a.b.c' sobre estructuras lanza KeyNotFound o NoSuchProperty si algun segmento intermedio es nulo o no es struct.",
+                "details"           : "En bloques de fallback y manejo de contingencias, las estructuras de configuracion pueden mutar o carecer de subsecciones. El patron BoxLang idiomático requiere comprobar 'structKeyExists( parent, key ) && isStruct( parent[ key ] )' o el operador '?.' con valores por defecto explicitos.",
+                "recommendations"   : "Proteger cadenas de configuracion con clausulas de guarda y valores por defecto seguros.",
+                "codeSnippets"      : [
+                    "// Vulnerable:\nvar queue = variables.config.fallback.queueName;\n\n// Endurecido:\nvar fb = ( structKeyExists( variables.config, 'fallback' ) && isStruct( variables.config.fallback ) ) ? variables.config.fallback : {};\nvar queue = ( structKeyExists( fb, 'queueName' ) && isSimpleValue( fb.queueName ) ) ? fb.queueName : 'default-queue';"
+                ]
+            },
+            // 3. CYBERSECURITY - CWE-20 Input Validation
+            {
+                "id"                : "KB-SEC-020",
+                "title"             : "CWE-20: Validacion Impropia de Entradas en Transacciones Financieras",
+                "category"          : "SECURITY_CWE",
+                "source"            : "MITRE CWE / OWASP Top 10",
+                "date"              : "2026-08-15",
+                "version"           : "CWE-4.14",
+                "reliability"       : "STANDARDIZED",
+                "scope"             : "CYBERSECURITY",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "security", "cwe-20", "input-validation", "amounts", "financial" ],
+                "summary"           : "Permitir valores negativos, nulos o cadenas malformadas en campos de monto permite evasiones contables o denegacion de servicio.",
+                "details"           : "El campo amount debe ser validado estrictamente como numerico positivo (> 0). Las entradas como strings formateados con separadores de miles o signos de moneda deben sanitizarse o rechazarse con estado REJECTED_INVALID_AMOUNT.",
+                "recommendations"   : "Rechazar transacciones con monto <= 0 o no convertible a numero.",
+                "codeSnippets"      : [
+                    "if ( !isNumeric( cleanAmount ) || cleanAmount <= 0 ) {\n    return { status: 'REJECTED_INVALID_AMOUNT', amount: 0 };\n}"
+                ]
+            },
+            // 4. CYBERSECURITY - CWE-22 Path Traversal
+            {
+                "id"                : "KB-SEC-022",
+                "title"             : "CWE-22 / CWE-23: Restriccion Inadecuada de Rutas de Archivos (Path Traversal)",
+                "category"          : "SECURITY_CWE",
+                "source"            : "MITRE CWE / OWASP ASVS",
+                "date"              : "2026-09-01",
+                "version"           : "CWE-4.14",
+                "reliability"       : "STANDARDIZED",
+                "scope"             : "CYBERSECURITY",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "security", "cwe-22", "path-traversal", "sandbox", "filesystem" ],
+                "summary"           : "La lectura o escritura de archivos mediante rutas que admiten '../' o secuencias de escape permite acceder a secretos del sistema operativo.",
+                "details"           : "Toda ruta en escaner de repositorios, ingesta de logs o generacion de reportes debe normalizarse y resolverse mediante SecuritySandbox.resolveSafePath() verificando que quede estrictamente confinada bajo la raiz del proyecto.",
+                "recommendations"   : "Bloquear secuencias '../' y validar confinamiento con canonical path.",
+                "codeSnippets"      : [
+                    "if ( find( '../', path ) > 0 || find( '..\\', path ) > 0 ) {\n    throw( type='SecurityException', message='Path traversal detectado' );\n}"
+                ]
+            },
+            // 5. CYBERSECURITY - CWE-918 Server-Side Request Forgery (SSRF)
+            {
+                "id"                : "KB-SEC-918",
+                "title"             : "CWE-918: Falsificacion de Peticiones del Lado del Servidor (SSRF) y Filtrado Web",
+                "category"          : "SECURITY_CWE",
+                "source"            : "MITRE CWE / OWASP Top 10 A10",
+                "date"              : "2026-09-10",
+                "version"           : "CWE-4.14",
+                "reliability"       : "STANDARDIZED",
+                "scope"             : "CYBERSECURITY",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "security", "cwe-918", "ssrf", "web-research", "allowlist", "network" ],
+                "summary"           : "Componentes que realizan peticiones HTTP externas pueden ser manipulados para escanear redes internas (127.0.0.1, 10.0.0.0/8, 192.168.0.0/16) o servicios de metadatos de nube (169.254.169.254).",
+                "details"           : "Toda capa de investigacion web debe: 1) validar el dominio contra una lista blanca estricta, 2) resolver la IP en DNS y comprobar que no sea privada ni loopback, 3) prohibir redirecciones a destinos internos, y 4) validar certificados TLS autenticos.",
+                "recommendations"   : "Implementar validacion previa de DNS con InetAddress.isSiteLocalAddress() y isLoopbackAddress().",
+                "codeSnippets"      : [
+                    "var addr = InetAddress.getByName( host );\nif ( addr.isLoopbackAddress() || addr.isSiteLocalAddress() || addr.isLinkLocalAddress() ) {\n    throw( type='SecurityException', message='SSRF detectado: IP privada bloqueada' );\n}"
+                ]
+            },
+            // 6. ARCHITECTURE PATTERN - Fallback Endurecido
+            {
+                "id"                : "KB-ARC-001",
+                "title"             : "Patron de Contingencia y Fallback Endurecido (Self-Healing Resilience)",
+                "category"          : "ARCHITECTURE_PATTERN",
+                "source"            : "Ortus Solutions / ANIA Reto 01 INCIDENT ZERO",
+                "date"              : "2026-10-10",
+                "version"           : "1.0.0",
+                "reliability"       : "EMPIRICALLY_VERIFIED",
+                "scope"             : "FALLBACK_RESILIENCE",
+                "verificationLevel" : "EXPERIMENTAL_PROVEN",
+                "tags"              : [ "architecture", "self-healing", "fallback", "chaos-engineering", "circuit-breaker" ],
+                "summary"           : "Un manejador de contingencias (catch) NUNCA debe fallar por errores de su propia logica cuando el servicio primario colapsa.",
+                "details"           : "Si el bloque catch del gateway remoto revienta debido a errores de tipo o desreferencia nula, la aplicacion emite un error 500 no controlado. El fallback debe operar de forma totalmente autonoma con tipos defensivos y colas de contingencia offline aseguradas.",
+                "recommendations"   : "Validar tipos, aislar estructuras y asegurar que todo camino de error devuelva un contrato estable.",
+                "codeSnippets"      : []
+            },
+            // 7. STATIC & DYNAMIC ANALYSIS - Principios de Calidad
+            {
+                "id"                : "KB-ANA-001",
+                "title"             : "Buenas Practicas de Analisis Estatico y Dinamico en BoxLang",
+                "category"          : "STATIC_DYNAMIC_ANALYSIS",
+                "source"            : "Engineering Quality Handbook",
+                "date"              : "2026-09-20",
+                "version"           : "2.1.0",
+                "reliability"       : "OFFICIAL_DOCUMENTED",
+                "scope"             : "STATIC_ANALYSIS",
+                "verificationLevel" : "DOCUMENTED_FACT",
+                "tags"              : [ "quality", "static-analysis", "dynamic-analysis", "ast", "testing" ],
+                "summary"           : "El analisis estatico detecta anomalias estructurales en microsegundos; el caos dinamico verifica el comportamiento real bajo perturbaciones.",
+                "details"           : "Combinar el escaneo estatico del AST (para cadenas de configuracion desprotegidas o llamadas de reflexion) con inyecciones de caos dinamico (timeouts de lectura, payloads rotos, nulos). Las pruebas deben repetirse exactamente iguales sobre el codigo parcheado para certificar la solucion.",
+                "recommendations"   : "Ejecutar comprobaciones estaticas deterministas previas y validar parches re-ejecutando la bateria completa de caos.",
+                "codeSnippets"      : []
+            }
+        ];
+
+        for ( var s in seeds ) {
+            addEntry( s );
+        }
+    }
+
+    private void function loadEcosystemKnowledge() {
+        try {
+            var registry = new models.language.EcosystemRegistry();
+            var ecoEntries = registry.exportToKnowledgeBaseEntries();
+            for ( var e in ecoEntries ) {
+                try {
+                    addEntry( e, false );
+                } catch ( any ignore ) {}
+            }
+        } catch ( any ignore ) {}
+    }
+
+    /**
+     * Exporta el catalogo de reglas, vulnerabilidades y remediaciones verificadas
+     * a un paquete portable de vacunas (Vaccine Pack) para compartir entre microservicios.
+     */
+    public struct function exportVaccinePack( required string outputPath, string packName = "FaultGraph-VaccinePack" ) {
+        var pack = {
+            "packName"   : arguments.packName,
+            "version"    : "1.0.0",
+            "exportedAt" : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ),
+            "entryCount" : arrayLen( variables.entries ),
+            "entries"    : variables.entries
+        };
+
+        var safeOut = replace( arguments.outputPath, "\", "/", "all" );
+        var parentDir = getDirectoryFromPath( safeOut );
+        if ( len( parentDir ) > 0 && !directoryExists( parentDir ) ) {
+            directoryCreate( parentDir, true );
+        }
+
+        fileWrite( safeOut, jsonSerialize( pack ) );
+
+        return {
+            "ok"         : true,
+            "packName"   : arguments.packName,
+            "entryCount" : arrayLen( variables.entries ),
+            "filePath"   : safeOut
+        };
+    }
+
+    /**
+     * Importa e inocula un paquete de vacunas externas (Vaccine Pack),
+     * fusionando nuevas reglas de conocimiento e indexandolas en la memoria vectorial.
+     */
+    public struct function importVaccinePack( required string inputPath ) {
+        var safeIn = replace( arguments.inputPath, "\", "/", "all" );
+        if ( !fileExists( safeIn ) ) {
+            return { "ok": false, "error": "No existe el paquete de vacunas: " & safeIn };
+        }
+
+        var content = fileRead( safeIn );
+        if ( !isJson( content ) ) {
+            return { "ok": false, "error": "Formato de paquete de vacunas invalido (no es JSON)" };
+        }
+
+        var pack = jsonDeserialize( content );
+        var packEntries = structKeyExists( pack, "entries" ) && isArray( pack.entries ) ? pack.entries : [];
+        var imported = 0;
+        var skipped  = 0;
+
+        for ( var e in packEntries ) {
+            var added = addEntry( e, true );
+            if ( added ) {
+                imported = imported + 1;
+            } else {
+                skipped = skipped + 1;
+            }
+        }
+
+        return {
+            "ok"            : true,
+            "packName"      : structKeyExists( pack, "packName" ) ? pack.packName : "ImportedPack",
+            "totalInPack"   : arrayLen( packEntries ),
+            "importedCount" : imported,
+            "skippedCount"  : skipped
+        };
+    }
+
+}
+

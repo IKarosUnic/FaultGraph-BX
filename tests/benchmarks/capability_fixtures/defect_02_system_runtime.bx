@@ -1,0 +1,8 @@
+/**
+ * Known Defect: Dangerous System Call / Command Execution (CWE-78)
+ */
+class {
+    function runCommand( required string cmd ) {
+        return Runtime.getRuntime().exec( arguments.cmd );
+    }
+}

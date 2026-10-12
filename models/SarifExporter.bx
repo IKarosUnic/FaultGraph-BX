@@ -1,0 +1,468 @@
+/**
+ * SarifExporter.bx - Exportador oficial al estandar OASIS SARIF v2.1.0
+ * (Static Analysis Results Interchange Format).
+ *
+ * Permite que FaultGraph-BX se integre de forma nativa en:
+ *   - GitHub Code Scanning / Security Tab
+ *   - GitLab Security Dashboards
+ *   - SonarQube / DefectDojo
+ *   - Pull Request Review Annotations (comentarios automaticos en PRs)
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    property name="toolName"    type="string" default="FaultGraph-BX";
+    property name="toolVersion" type="string" default="2.4.0";
+    property name="schemaUri"   type="string" default="https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json";
+
+    public any function init( string toolName = "FaultGraph-BX", string toolVersion = "2.4.0" ) {
+        variables.toolName    = arguments.toolName;
+        variables.toolVersion = arguments.toolVersion;
+        variables.ruleCatalog = getRuleCatalog();
+        return this;
+    }
+
+    /**
+     * Convierte los resultados de RepositoryScanner en un documento formal SARIF v2.1.0.
+     *
+     * @scanResults Estructura devuelta por RepositoryScanner.scanDirectory() o scanFile()
+     * @baseUri     URI base para resolver rutas relativas (ej. "file:///workspace/")
+     * @return struct con el esquema SARIF v2.1.0 completo
+     */
+    public struct function exportFromScanner( required struct scanResults, string baseUri = "" ) {
+        var sarif = {
+            "$schema": variables.schemaUri,
+            "version": "2.1.0",
+            "runs"   : []
+        };
+
+        var rulesUsed   = {};
+        var sarifResults = [];
+
+        var files = structKeyExists( arguments.scanResults, "files" ) ? arguments.scanResults.files : [ arguments.scanResults ];
+
+        for ( var f in files ) {
+            var filePath = structKeyExists( f, "filePath" ) ? f.filePath : "";
+            var issues   = structKeyExists( f, "issues" ) ? f.issues : [];
+
+            // Normalizar URI
+            var normalizedUri = replace( filePath, "\", "/", "all" );
+            var cleanBase = replace( arguments.baseUri, "\", "/", "all" );
+            if ( len( cleanBase ) > 0 && findNoCase( cleanBase, normalizedUri ) == 1 ) {
+                normalizedUri = replaceNoCase( normalizedUri, cleanBase, "" );
+            }
+            while ( len( normalizedUri ) > 1 && left( normalizedUri, 1 ) == "/" ) {
+                normalizedUri = right( normalizedUri, len( normalizedUri ) - 1 );
+            }
+
+            for ( var iss in issues ) {
+                var ruleId = structKeyExists( iss, "code" ) ? iss.code : "GENERIC_DEFECT";
+                var sev    = structKeyExists( iss, "severity" ) ? iss.severity : "HIGH";
+                var level  = mapSeverityToSarifLevel( sev );
+
+                // Registrar regla si no esta en el catalogo
+                if ( !structKeyExists( rulesUsed, ruleId ) ) {
+                    rulesUsed[ ruleId ] = resolveRuleDefinition( ruleId, iss );
+                }
+
+                var lineNum = ( structKeyExists( iss, "line" ) && isNumeric( iss.line ) && val( iss.line ) >= 1 ) ? val( iss.line ) : 1;
+                var desc    = structKeyExists( iss, "description" ) ? iss.description : "Defecto detectado por FaultGraph-BX";
+                var remed   = structKeyExists( iss, "remediation" ) ? iss.remediation : "";
+                var ev      = structKeyExists( iss, "evidence" ) ? iss.evidence : "";
+
+                var fullMessage = desc;
+                if ( len( trim( remed ) ) > 0 ) {
+                    fullMessage = fullMessage & " | Correccion recomendada: " & remed;
+                }
+
+                var sarifResult = {
+                    "ruleId"   : ruleId,
+                    "level"    : level,
+                    "message"  : {
+                        "text": fullMessage
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": normalizedUri
+                                },
+                                "region": {
+                                    "startLine": lineNum,
+                                    "startColumn": 1,
+                                    "snippet": {
+                                        "text": ev
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "properties": {
+                        "severity"   : sev,
+                        "remediation": remed
+                    }
+                };
+
+                arrayAppend( sarifResults, sarifResult );
+            }
+        }
+
+        // Construir el array de reglas del driver y mapear ruleIndex
+        var driverRules = [];
+        var ruleIndexMap = {};
+        for ( var rId in rulesUsed ) {
+            arrayAppend( driverRules, rulesUsed[ rId ] );
+            ruleIndexMap[ rId ] = arrayLen( driverRules ) - 1;
+        }
+
+        for ( var resItem in sarifResults ) {
+            if ( structKeyExists( ruleIndexMap, resItem.ruleId ) ) {
+                resItem[ "ruleIndex" ] = ruleIndexMap[ resItem.ruleId ];
+            }
+        }
+
+        var run = {
+            "tool": {
+                "driver": {
+                    "name"          : variables.toolName,
+                    "version"       : variables.toolVersion,
+                    "informationUri": "https://boxlang.io",
+                    "rules"         : driverRules
+                }
+            },
+            "results": sarifResults
+        };
+
+        arrayAppend( sarif.runs, run );
+        return sarif;
+    }
+
+    /**
+     * Mapea niveles de severidad de FaultGraph-BX a niveles estandar SARIF.
+     */
+    public string function mapSeverityToSarifLevel( required string severity ) {
+        switch ( uCase( arguments.severity ) ) {
+            case "CRITICAL":
+            case "HIGH":
+                return "error";
+            case "MEDIUM":
+                return "warning";
+            case "LOW":
+            case "INFO":
+                return "note";
+            default:
+                return "warning";
+        }
+    }
+
+    /**
+     * Catalogo maestro de reglas con metadatos de ciberseguridad y CWE.
+     */
+    public struct function getRuleCatalog() {
+        return {
+            "DANGEROUS_SYSTEM_CALL": {
+                "id": "DANGEROUS_SYSTEM_CALL",
+                "name": "DangerousSystemInvocation",
+                "shortDescription": { "text": "Invocacion peligrosa al sistema operativo o reflexion profunda" },
+                "fullDescription": { "text": "Uso de Runtime.getRuntime(), ProcessBuilder o reflexion indebida sin validacion de privilegios." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Encapsular la logica en servicios con privilegios minimos y evitar reflexion dinamica en codigo critico." },
+                "properties": { "cwe": [ "CWE-78", "CWE-676" ] }
+            },
+            "HARDCODED_SECRET": {
+                "id": "HARDCODED_SECRET",
+                "name": "HardcodedSecretOrKey",
+                "shortDescription": { "text": "Clave API, credencial o secreto estatico expuesto en codigo" },
+                "fullDescription": { "text": "Deteccion de literales de claves API, contrasenas o tokens JWT dentro del codigo fuente." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Extraer las credenciales a variables de entorno o un gestor de secretos (CWE-798)." },
+                "properties": { "cwe": [ "CWE-798" ] }
+            },
+            "UNPROTECTED_CONFIG_DEREF": {
+                "id": "UNPROTECTED_CONFIG_DEREF",
+                "name": "UnprotectedConfigDereference",
+                "shortDescription": { "text": "Desreferenciacion nula de configuracion o struct sin verificar" },
+                "fullDescription": { "text": "Acceso anidado a struct sin comprobacion previa mediante structKeyExists() ni operador de navegacion segura." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Verificar la clave con structKeyExists() o utilizar operador Elvis (?:) con valor predeterminado." },
+                "properties": { "cwe": [ "CWE-476" ] }
+            },
+            "UNVALIDATED_NUMERIC_CAST": {
+                "id": "UNVALIDATED_NUMERIC_CAST",
+                "name": "UnvalidatedNumericCast",
+                "shortDescription": { "text": "Operacion aritmetica sobre valor sin validar isNumeric()" },
+                "fullDescription": { "text": "Casteo implicito en operaciones matematicas que causa excepciones en tiempo de ejecucion ante cadenas no numericas." },
+                "defaultConfiguration": { "level": "warning" },
+                "help": { "text": "Validar isNumeric() y limpiar caracteres no numericos antes de calcular (CWE-20)." },
+                "properties": { "cwe": [ "CWE-20", "CWE-1287" ] }
+            },
+            "UNVALIDATED_PAYLOAD": {
+                "id": "UNVALIDATED_PAYLOAD",
+                "name": "UnvalidatedPayloadInput",
+                "shortDescription": { "text": "Payload de entrada sin validacion de contrato o esquema" },
+                "fullDescription": { "text": "Procesamiento de estructuras de entrada sin verificacion de tipos, campos obligatorios ni limites." },
+                "defaultConfiguration": { "level": "warning" },
+                "help": { "text": "Aplicar validacion de contrato antes de procesar entradas externas." },
+                "properties": { "cwe": [ "CWE-20" ] }
+            },
+            "SQL_INJECTION_RISK": {
+                "id": "SQL_INJECTION_RISK",
+                "name": "SqlInjectionVulnerability",
+                "shortDescription": { "text": "Concatenacion dinamica en consulta SQL sin parametrizar (CWE-89)" },
+                "fullDescription": { "text": "Construccion de sentencias SQL mediante concatenacion de cadenas que permite inyeccion de comandos SQL." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Utilizar queryExecute( sql, params ) con bindings de parametros o cfqueryparam (CWE-89)." },
+                "properties": { "cwe": [ "CWE-89" ] }
+            },
+            "RESOURCE_LEAK_RISK": {
+                "id": "RESOURCE_LEAK_RISK",
+                "name": "ResourceOrStreamLeak",
+                "shortDescription": { "text": "Apertura de stream o recurso I/O sin bloque try/finally ni cierre garantizado" },
+                "fullDescription": { "text": "Apertura de flujos de datos o sockets sin asegurar su cierre, ocasionando agotamiento de descriptores de archivos." },
+                "defaultConfiguration": { "level": "warning" },
+                "help": { "text": "Envolver la apertura y lectura del stream en bloque try...finally asegurando el cierre con close() (CWE-775 / CWE-404)." },
+                "properties": { "cwe": [ "CWE-775", "CWE-404" ] }
+            },
+            "UNSAFE_CONCURRENT_MUTATION": {
+                "id": "UNSAFE_CONCURRENT_MUTATION",
+                "name": "UnsafeConcurrentSharedStateMutation",
+                "shortDescription": { "text": "Mutacion directa de ambito global (application/server) sin bloqueo" },
+                "fullDescription": { "text": "Modificacion de variables en ambitos compartidos concurrentes sin sincronizacion cflock ni estructuras thread-safe." },
+                "defaultConfiguration": { "level": "warning" },
+                "help": { "text": "Sincronizar mutaciones con cflock o emplear estructuras ConcurrentHashMap o Atomic (CWE-362)." },
+                "properties": { "cwe": [ "CWE-362" ] }
+            },
+            "INSECURE_DESERIALIZATION": {
+                "id": "INSECURE_DESERIALIZATION",
+                "name": "InsecureJavaDeserialization",
+                "shortDescription": { "text": "Deserializacion binaria no segura de objetos Java (CWE-502)" },
+                "fullDescription": { "text": "Uso de ObjectInputStream sin validacion de tipos permitiendo ejecucion remota de codigo." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Evitar ObjectInputStream o implementar ObjectInputFilter con lista blanca de clases permitidas (CWE-502)." },
+                "properties": { "cwe": [ "CWE-502" ] }
+            },
+            "TAINTED_DATA_FLOW_TO_SINK": {
+                "id": "TAINTED_DATA_FLOW_TO_SINK",
+                "name": "TaintedDataFlowToSink",
+                "shortDescription": { "text": "Flujo de datos no confiable hacia un sumidero critico (CWE-20 / Taint Flow)" },
+                "fullDescription": { "text": "Variable originada en ambitos no confiables (url, form, rc) que fluye hacia consultas o ejecuciones sin validacion ni saneamiento." },
+                "defaultConfiguration": { "level": "error" },
+                "help": { "text": "Sanitizar o validar con lista blanca los parametros de entrada antes de propagarlos a sumideros criticos (CWE-20)." },
+                "properties": { "cwe": [ "CWE-20", "CWE-89", "CWE-78" ] }
+            }
+        };
+    }
+
+    /**
+     * Resuelve la definicion formal de una regla a partir del catalogo o la sintetiza.
+     */
+    private struct function resolveRuleDefinition( required string ruleId, struct issueContext = {} ) {
+        if ( structKeyExists( variables.ruleCatalog, arguments.ruleId ) ) {
+            return variables.ruleCatalog[ arguments.ruleId ];
+        }
+
+        var desc = structKeyExists( arguments.issueContext, "description" ) ? arguments.issueContext.description : arguments.ruleId;
+        var remed = structKeyExists( arguments.issueContext, "remediation" ) ? arguments.issueContext.remediation : "Corregir el defecto detectado";
+        var cweVal = ( structKeyExists( arguments.issueContext, "cwe" ) && len( trim( arguments.issueContext.cwe ) ) ) ? [ arguments.issueContext.cwe ] : [ "CWE-699" ];
+
+        return {
+            "id": arguments.ruleId,
+            "name": arguments.ruleId,
+            "shortDescription": { "text": desc },
+            "fullDescription": { "text": desc },
+            "defaultConfiguration": { "level": "warning" },
+            "help": { "text": remed },
+            "properties": { "cwe": cweVal }
+        };
+    }
+
+    /**
+     * Guarda el informe SARIF en un archivo en disco.
+     */
+    public boolean function saveToFile( required struct sarifData, required string targetPath ) {
+        var jsonContent = jsonSerialize( arguments.sarifData );
+        var targetDir = getDirectoryFromPath( arguments.targetPath );
+        if ( len( targetDir ) > 0 && !directoryExists( targetDir ) ) {
+            directoryCreate( targetDir, true );
+        }
+        fileWrite( arguments.targetPath, jsonContent );
+        return true;
+    }
+
+    /**
+     * Genera un resumen en Markdown apto para GitHub Step Summary ($GITHUB_STEP_SUMMARY)
+     * o comentarios de Pull Request.
+     */
+    public string function generateMarkdownSummary( required struct sarifData ) {
+        var sb = [];
+        var h2 = repeatString( char( 35 ), 2 );
+        var h3 = repeatString( char( 35 ), 3 );
+        arrayAppend( sb, h2 & " FaultGraph-BX :: Resumen de Auditoria SARIF" );
+        arrayAppend( sb, "" );
+
+        var run = arrayLen( arguments.sarifData.runs ) > 0 ? arguments.sarifData.runs[ 1 ] : {};
+        var results = structKeyExists( run, "results" ) ? run.results : [];
+
+        var errorCount = 0;
+        var warnCount  = 0;
+        var noteCount  = 0;
+
+        for ( var r in results ) {
+            if ( r.level == "error" ) { errorCount++; }
+            else if ( r.level == "warning" ) { warnCount++; }
+            else { noteCount++; }
+        }
+
+        arrayAppend( sb, "| Severidad | Cantidad |" );
+        arrayAppend( sb, "| :--- | :--- |" );
+        arrayAppend( sb, "| [ERROR] Criticos/Altos | " & errorCount & " |" );
+        arrayAppend( sb, "| [WARN]  Medios         | " & warnCount & " |" );
+        arrayAppend( sb, "| [INFO]  Bajos          | " & noteCount & " |" );
+        arrayAppend( sb, "" );
+
+        if ( arrayLen( results ) == 0 ) {
+            arrayAppend( sb, "**Codigo Limpio:** No se detectaron vulnerabilidades ni defectos de calidad." );
+            return arrayToList( sb, char( 10 ) );
+        }
+
+        arrayAppend( sb, h3 & " Hallazgos Detectados" );
+        arrayAppend( sb, "" );
+        arrayAppend( sb, "| Archivo:Linea | Regla | Nivel | Mensaje |" );
+        arrayAppend( sb, "| :--- | :--- | :--- | :--- |" );
+
+        for ( var r in results ) {
+            var loc = arrayLen( r.locations ) > 0 ? r.locations[ 1 ].physicalLocation : {};
+            var uri = structKeyExists( loc, "artifactLocation" ) ? loc.artifactLocation.uri : "N/A";
+            var line = structKeyExists( loc, "region" ) ? loc.region.startLine : 1;
+            var msg = r.message.text;
+            var lvl = ( r.level == "error" ) ? "[ERROR]" : ( ( r.level == "warning" ) ? "[WARN]" : "[INFO]" );
+
+            arrayAppend( sb, "| `" & uri & ":" & line & "` | `" & r.ruleId & "` | " & lvl & " | " & msg & " |" );
+        }
+
+        return arrayToList( sb, char( 10 ) );
+    }
+
+    /**
+     * Convierte un diagnostico y grafo de propagacion de fallos de Healer.diagnose()
+     * en un documento formal SARIF v2.1.0 con codeFlows y threadFlows (OASIS SARIF sec 3.36).
+     *
+     * Permite que GitHub Code Scanning visualice la traza de propagacion de fallos paso a paso.
+     */
+    public struct function exportFromDiagnosis( required struct diagnosis, string targetFile = "target_app/PaymentService.bx", string baseUri = "" ) {
+        var sarif = {
+            "$schema": variables.schemaUri,
+            "version": "2.1.0",
+            "runs"   : []
+        };
+
+        var normTarget = replace( arguments.targetFile, "\", "/", "all" );
+        var cleanBase = replace( arguments.baseUri, "\", "/", "all" );
+        if ( len( cleanBase ) > 0 && findNoCase( cleanBase, normTarget ) == 1 ) {
+            normTarget = replaceNoCase( normTarget, cleanBase, "" );
+        }
+        while ( len( normTarget ) > 1 && left( normTarget, 1 ) == "/" ) {
+            normTarget = right( normTarget, len( normTarget ) - 1 );
+        }
+
+        var causes = structKeyExists( arguments.diagnosis, "causes" ) ? arguments.diagnosis.causes : [];
+        var sarifResults = [];
+        var driverRules = [];
+        var ruleIndexMap = {};
+
+        for ( var c in causes ) {
+            var ruleId = structKeyExists( c, "code" ) ? c.code : "INCIDENT_CAUSE";
+            var ruleDef = resolveRuleDefinition( ruleId, { "description": c.title, "remediation": c.remediation } );
+
+            if ( !structKeyExists( ruleIndexMap, ruleId ) ) {
+                arrayAppend( driverRules, ruleDef );
+                ruleIndexMap[ ruleId ] = arrayLen( driverRules ) - 1;
+            }
+
+            var scList = structKeyExists( c, "scenarios" ) && isArray( c.scenarios ) ? arrayToList( c.scenarios, ", " ) : "GATEWAY_TIMEOUT";
+            var errSample = structKeyExists( c, "sampleError" ) ? c.sampleError : "Defecto en contingencia";
+
+            var threadLocations = [
+                {
+                    "location": {
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": normTarget },
+                            "region": { "startLine": 38, "startColumn": 1 }
+                        },
+                        "message": { "text": "Paso 1 (Inyeccion): Gateway externo falla en escenario(s) [" & scList & "]" }
+                    },
+                    "importance": "essential"
+                },
+                {
+                    "location": {
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": normTarget },
+                            "region": { "startLine": 50, "startColumn": 1 }
+                        },
+                        "message": { "text": "Paso 2 (Propagacion): Gateway lanza excepcion, catch transfiere flujo a fallbackCharge()" }
+                    },
+                    "importance": "essential"
+                },
+                {
+                    "location": {
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": normTarget },
+                            "region": { "startLine": 60, "startColumn": 1 }
+                        },
+                        "message": { "text": "Paso 3 (Fallo Raiz): " & c.title & " | Traza: " & errSample }
+                    },
+                    "importance": "essential"
+                }
+            ];
+
+            var resItem = {
+                "ruleId"   : ruleId,
+                "ruleIndex": ruleIndexMap[ ruleId ],
+                "level"    : mapSeverityToSarifLevel( c.severity ),
+                "message"  : {
+                    "text": "[Incidente Verificado] " & c.title & " | Remediacion: " & c.remediation
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": normTarget },
+                            "region": { "startLine": 60, "startColumn": 1 }
+                        }
+                    }
+                ],
+                "codeFlows": [
+                    {
+                        "threadFlows": [
+                            {
+                                "locations": threadLocations
+                            }
+                        ]
+                    }
+                ],
+                "properties": {
+                    "confidence": structKeyExists( c, "confidence" ) ? c.confidence : "ALTA",
+                    "scenarios" : structKeyExists( c, "scenarios" ) ? c.scenarios : []
+                }
+            };
+
+            arrayAppend( sarifResults, resItem );
+        }
+
+        var run = {
+            "tool": {
+                "driver": {
+                    "name"          : variables.toolName,
+                    "version"       : variables.toolVersion,
+                    "informationUri": "https://boxlang.io",
+                    "rules"         : driverRules
+                }
+            },
+            "results": sarifResults
+        };
+
+        arrayAppend( sarif.runs, run );
+        return sarif;
+    }
+
+}

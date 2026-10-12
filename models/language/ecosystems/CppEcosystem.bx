@@ -1,0 +1,153 @@
+/**
+ * CppEcosystem - Modulo de conocimiento especializado y analizador estatico
+ * determinista para C y C++ (Gestion de memoria, UB, seguridad en sistemas).
+ *
+ * Fuente: ISO/IEC 14882 (C++ Standard), SEI CERT C/C++ Coding Standards, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "C/C++";
+        variables.version     = "C11 / C17 / C++17 / C++20";
+        variables.provenance  = "ISO/IEC C++ Committee / SEI CERT C/C++ Standards / Clang-Tidy";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "CMake", "Make / Ninja", "Meson" ],
+            "compilers"      : [ "GCC", "Clang / LLVM", "MSVC" ],
+            "testFrameworks" : [ "Google Test (gtest)", "Catch2", "doctest" ],
+            "analyzers"      : [ "cppcheck", "clang-tidy", "AddressSanitizer (ASan)", "Valgrind" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "CPP_BUFFER_OVERFLOW_STRCPY",
+                "cwe"         : "CWE-120",
+                "severity"    : "CRITICAL",
+                "title"       : "Buffer Overflow por uso de funciones de copia no acotadas",
+                "symptoms"    : "Corrupcion de memoria, Segmentation Fault o ejecucion remota de codigo",
+                "rootCause"   : "Uso de strcpy, gets o strcat que no comprueban el tamano del buffer de destino",
+                "remediation" : "Reemplazar por snprintf, strncpy o utilizar std::string en C++ moderno",
+                "exampleVuln" : 'char buf[64]; strcpy(buf, input);',
+                "exampleFixed": 'std::string buf = input;'
+            },
+            {
+                "code"        : "CPP_USE_AFTER_FREE",
+                "cwe"         : "CWE-416",
+                "severity"    : "CRITICAL",
+                "title"       : "Use-After-Free (UAF) al desreferenciar puntero liberado",
+                "symptoms"    : "Crash aleatorio, lectura de memoria basura o explotacion de seguridad",
+                "rootCause"   : "Acceso a una direccion de memoria tras llamar a free(ptr) o delete ptr",
+                "remediation" : "Asignar ptr = nullptr inmediatamente tras liberar o migrar a smart pointers (std::unique_ptr)",
+                "exampleVuln" : 'free(p); printf("%d", p->val);',
+                "exampleFixed": 'auto p = std::make_unique<Resource>();'
+            },
+            {
+                "code"        : "CPP_FORMAT_STRING_VULN",
+                "cwe"         : "CWE-134",
+                "severity"    : "CRITICAL",
+                "title"       : "Vulnerabilidad de cadena de formato no controlada (CWE-134)",
+                "symptoms"    : "Lectura/escritura arbitraria de pila (stack) mediante especificadores %x o %n",
+                "rootCause"   : "Invocacion de printf(userInput) donde la entrada del usuario es interpretada como formato",
+                "remediation" : "Pasar siempre una cadena de formato estatica explicita: printf('%s', userInput)",
+                "exampleVuln" : 'printf(msg);',
+                "exampleFixed": 'printf("%s", msg);'
+            },
+            {
+                "code"        : "CPP_MEMORY_LEAK_RAW_ALLOC",
+                "cwe"         : "CWE-401",
+                "severity"    : "HIGH",
+                "title"       : "Fuga de memoria por reserva dinamica sin desasignacion RAII",
+                "symptoms"    : "Consumo creciente de memoria RAM hasta agotamiento OOM del sistema",
+                "rootCause"   : "malloc o new sin correspondiente free o delete en todos los caminos de salida",
+                "remediation" : "Adoptar la disciplina RAII utilizando contenedores estandar (std::vector, std::string, std::unique_ptr)",
+                "exampleVuln" : 'int* arr = new int[100]; if (error) return; delete[] arr;',
+                "exampleFixed": 'std::vector<int> arr(100);'
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( left( trimmed, 2 ) == "//" || left( trimmed, 1 ) == "*" || len( trimmed ) == 0 ) {
+                continue;
+            }
+
+            // 1. Funciones C inherentemente inseguras (Buffer Overflow)
+            if ( reFindNoCase( "\b(gets\s*\(|strcpy\s*\(|strcat\s*\(|sprintf\s*\([^,]+,[^'""\s]+\))", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "CPP_BUFFER_OVERFLOW_UNSAFE_FUNC",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-120",
+                    "language"   : "C/C++",
+                    "description": "Uso de funcion C propensa a desbordamiento de buffer sin limite de tamano (CWE-120).",
+                    "evidence"   : trimmed,
+                    "remediation": "Reemplazar por snprintf, strncpy o std::string con verificacion estricta de longitud."
+                } );
+            }
+
+            // 2. Vulnerabilidad de formato de cadena (printf sin formato fijo)
+            if ( reFindNoCase( "\b(printf|fprintf|syslog)\s*\(\s*[a-zA-Z0-9_]+\s*\)", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "CPP_FORMAT_STRING_VULN",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-134",
+                    "language"   : "C/C++",
+                    "description": "Invocacion de printf sin cadena de formato estatica susceptible a ataque de formato (CWE-134).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar printf con formato literal para garantizar interpretacion segura."
+                } );
+            }
+
+            // 3. Inyeccion de comandos de shell con system()
+            if ( reFindNoCase( "\bsystem\s*\([^)]+", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "CPP_DANGEROUS_SYSTEM_CALL",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "C/C++",
+                    "description": "Llamada a system() que invoca el shell del sistema operativo (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar execve() o CreateProcess() con argumentos separados sin pasar por el shell."
+                } );
+            }
+
+            // 4. Secretos hardcodeados
+            if ( reFindNoCase( "(api_key|password|secret_token)\s*=\s*['""][A-Za-z0-9_\-\.]{16,}['""]", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "CPP_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "C/C++",
+                    "description": "Credencial hardcodeada en codigo C/C++ (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Cargar credenciales mediante getenv() o archivos de configuracion protegidos."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

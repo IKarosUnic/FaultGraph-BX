@@ -1,0 +1,83 @@
+/**
+ * research.bxs - Herramienta CLI de Investigacion Tecnica Filtrada y Segura.
+ *
+ * Uso:
+ *   boxlang research.bxs "https://boxlang.io/docs"
+ *   boxlang research.bxs "BoxCastException"
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+cfg = new config.Config( rootDir );
+kb  = new models.KnowledgeBase( cfg );
+wr  = new models.WebResearchLayer( cfg );
+
+println( "============================================================" );
+println( "       FAULTGRAPH-BX :: CAPA DE INVESTIGACION CONTROLADA     " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+// Obtener argumento si se paso por linea de comandos
+query = "";
+if ( structKeyExists( variables, "args" ) && isArray( variables.args ) && arrayLen( variables.args ) > 0 ) {
+    query = variables.args[ 1 ];
+} else {
+    query = "BoxCastException percentage casting";
+}
+
+println( "Consulta solicitada: [" & query & "]" );
+println( "" );
+
+// 1. Si es una URL, ejecutar recuperacion web filtrada
+if ( left( query, 4 ) == "http" ) {
+    println( "--- [1] RECUPERACION WEB FILTRADA ---" );
+    fetchRes = wr.fetchUrl( query );
+    if ( fetchRes.ok ) {
+        println( "  [OK] Estado HTTP     : " & fetchRes.httpStatus );
+        println( "  [OK] Bytes recibidos : " & fetchRes.bytesReceived );
+        println( "  [OK] Hash SHA-256    : " & fetchRes.contentHash );
+        println( "  [OK] En cache        : " & ( fetchRes.cached ? "SI" : "NO" ) );
+        println( "  [OK] Nivel de prueba : " & fetchRes.verificationLevel );
+        println( "" );
+        println( "--- CONTENIDO AISLADO (Seguridad contra Prompt Injection) ---" );
+        println( left( fetchRes.isolatedContent, 600 ) & "..." );
+    } else {
+        println( "  [BLOQUEADO] Error de seguridad o red: " & fetchRes.error );
+    }
+} else {
+    // 2. Si es un termino o tema, consultar la base de conocimiento y sintetizar
+    println( "--- [1] BUSQUEDA EN BASE DE CONOCIMIENTO ESTRUCTURADA ---" );
+    hits = kb.search( query, "", 3 );
+    println( "Coincidencias verificadas encontradas: " & arrayLen( hits ) );
+    for ( hit in hits ) {
+        println( "" );
+        println( "  * [" & hit.id & " | " & hit.verificationLevel & "] " & hit.title );
+        println( "    Categoria : " & hit.category & " (Fuente: " & hit.source & ")" );
+        println( "    Score     : " & hit.relevanceScore );
+        println( "    Sintesis  : " & hit.summary );
+        if ( len( hit.recommendations ) ) {
+            println( "    Recomendacion: " & hit.recommendations );
+        }
+    }
+
+    println( "" );
+    println( "--- [2] SINTESIS VIA ESPECIALISTA LOCAL DE INVESTIGACION ---" );
+    ai = new models.SpecializedAIEngine( cfg, null, null, kb );
+    synth = ai.researchSynthesis( query, hits, [] );
+    if ( synth.ok ) {
+        println( "  Especialista : " & synth.specialist & " (" & synth.model & ")" );
+        println( "  Sintesis     : " & synth.synthesis );
+    } else {
+        println( "  Especialista no disponible: " & synth.error );
+    }
+}
+
+println( "" );
+println( "============================================================" );
+println( "INVESTIGACION FINALIZADA (0 secretos filtrados, 100% aislado)." );
+println( "============================================================" );

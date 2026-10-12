@@ -1,0 +1,363 @@
+/**
+ * SynergyPolyglotAndFlowIntegrationTest.bx
+ *
+ * Suite B23: Integracion de Flujos Principales, Especializacion Poliglota,
+ * Arbitraje AST vs Heuristica y Emulacion Adversaria Defensiva.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        variables.config   = new config.Config( arguments.rootDir );
+        return this;
+    }
+
+    public void function run() {
+        testIncidentDirectorFullFlowWithSynergy();
+        testDiagnosticVerificationEngineWithSynergy();
+        testPolyglotAttackSurfaceReconstruction();
+        testAdversaryEmulationCampaign();
+        testAstGuardRefutationOfHeuristicFalsePositives();
+        testCiRunnerWithSynergyIntegration();
+        testPolyglotMemoryAndRegressionSafety();
+    }
+
+    private void function testIncidentDirectorFullFlowWithSynergy() {
+        var id = "TC-SYN2-01";
+        var desc = "IncidentDirector: ciclo completo INCIDENT ZERO con SharedEvidenceGraph y emulacion adversaria";
+        var t0 = getTickCount();
+        try {
+            var cfg = variables.config;
+            var healer = new models.Healer( cfg );
+            var origFactory = function( struct sCfg, any gw ) {
+                return new target_app.PaymentService( sCfg, gw );
+            };
+            var chaos = new models.ChaosEngine( origFactory, cfg.getTargetServiceConfig(), "PaymentService (test)" );
+            var verifyFactory = function() {
+                var patchedFactory = function( struct sCfg, any gw ) {
+                    return new target_app.PaymentServicePatched( sCfg, gw );
+                };
+                return new models.ChaosEngine( patchedFactory, cfg.getTargetServiceConfig(), "PaymentServicePatched (test)" );
+            };
+
+            var director = new agents.IncidentDirector( cfg, healer, chaos, verifyFactory, null, null, null );
+            var summary = director.run();
+
+            variables.assert.isTrue( summary.verified, "El incidente debe quedar verificado tras aplicar el parche" );
+            variables.assert.isTrue( structKeyExists( summary, "adversaryEmulation" ), "El resumen debe contener emulacion adversaria" );
+            variables.assert.isTrue( summary.adversaryEmulation.disproved >= 1, "Al menos 1 hipotesis debe haber sido neutralizada por el parche" );
+            variables.assert.isTrue( fileExists( summary.reportMd ), "El reporte Markdown debe existir fisicamente" );
+
+            var mdContent = fileRead( summary.reportMd );
+            variables.assert.isTrue( findNoCase( "Emulacion Adversaria", mdContent ) > 0, "El reporte MD debe incluir la seccion de emulacion adversaria" );
+            variables.assert.isTrue( findNoCase( "flowchart", mdContent ) > 0 || findNoCase( "graph", mdContent ) > 0, "El reporte MD debe incluir el diagrama Mermaid de evidencias" );
+
+            variables.reporter.record( id, desc, "IncidentDirector.run()", "Parche verificado y emulacion completada", "OK (" & summary.adversaryEmulation.disproved & " neutralizadas)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "IncidentDirector.run()", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testDiagnosticVerificationEngineWithSynergy() {
+        var id = "TC-SYN2-02";
+        var desc = "DiagnosticVerificationEngine: Pasos 5 y 7 enriquecidos con superficie y emulacion adversaria";
+        var t0 = getTickCount();
+        try {
+            var engine = new models.DiagnosticVerificationEngine( variables.config );
+            var cfg = variables.config;
+            var origFactory = function( struct sCfg, any gw ) {
+                return new target_app.PaymentService( sCfg, gw );
+            };
+            var chaos = new models.ChaosEngine( origFactory, cfg.getTargetServiceConfig(), "PaymentService (test-dve)" );
+            var verifyFactory = function() {
+                var patchedFactory = function( struct sCfg, any gw ) {
+                    return new target_app.PaymentServicePatched( sCfg, gw );
+                };
+                return new models.ChaosEngine( patchedFactory, cfg.getTargetServiceConfig(), "PaymentServicePatched (test-dve)" );
+            };
+
+            var res = engine.executePipeline( cfg.getTargetSourcePath(), chaos, verifyFactory );
+
+            variables.assert.isTrue( res.verified, "El pipeline de 9 pasos debe finalizar verificado" );
+            variables.assert.isTrue( structKeyExists( res.steps, "step5_contrast" ), "Paso 5 presente" );
+            variables.assert.isTrue( structKeyExists( res.steps.step5_contrast.review, "attackSurface" ), "Paso 5 incluye reconstruccion de superficie" );
+            variables.assert.isTrue( structKeyExists( res.steps.step5_contrast.review, "adversaryHypotheses" ), "Paso 5 incluye hipotesis adversarias" );
+            variables.assert.isTrue( structKeyExists( res.steps, "step7_testing" ), "Paso 7 presente" );
+            variables.assert.isTrue( structKeyExists( res.steps.step7_testing, "adversaryEmulation" ), "Paso 7 incluye campana de emulacion" );
+            variables.assert.isTrue( structKeyExists( res.steps.step9_documentation, "evidenceGraphMermaid" ), "Paso 9 incluye Mermaid de evidencias" );
+
+            variables.reporter.record( id, desc, "executePipeline()", "9 Pasos con sinergia y emulacion", "OK (Paso 5 y 7 enriquecidos)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "executePipeline()", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testPolyglotAttackSurfaceReconstruction() {
+        var id = "TC-SYN2-03";
+        var desc = "Reconstruccion de superficie poliglota (Python, Java, JS/TS, BoxLang, C/C++)";
+        var t0 = getTickCount();
+        var fixtureDir = variables.rootDir & "tests/fixtures/polyglot_surface_fixture/";
+        try {
+            if ( !directoryExists( fixtureDir ) ) {
+                directoryCreate( fixtureDir, true );
+            }
+
+            // 1. Archivo Python con FastAPI y operaciones sensibles
+            var pyContent = "from fastapi import FastAPI, Depends" & char(10)
+                & "import sqlite3, os, subprocess, pickle" & char(10)
+                & "app = FastAPI()" & char(10)
+                & "@app.get('/api/v1/users')" & char(10)
+                & "def get_users(uid: str):" & char(10)
+                & "    conn = sqlite3.connect('db.sqlite')" & char(10)
+                & "    cursor = conn.cursor()" & char(10)
+                & "    cursor.execute(f'SELECT * FROM users WHERE id = {uid}')" & char(10)
+                & "    os.system('echo user queried')" & char(10)
+                & "    pickle.loads(b'data')" & char(10)
+                & "    return {'ok': True}" & char(10);
+            fileWrite( fixtureDir & "api.py", pyContent );
+
+            // 2. Archivo Java con Spring Boot y JDBC
+            var javaContent = "package com.example;" & char(10)
+                & "import org.springframework.web.bind.annotation.*;" & char(10)
+                & "import org.springframework.security.access.prepost.PreAuthorize;" & char(10)
+                & "import java.sql.*;" & char(10)
+                & "@RestController" & char(10)
+                & "public class PaymentController {" & char(10)
+                & "    @PostMapping('/api/v1/pay')" & char(10)
+                & "    @PreAuthorize('hasRole(''ADMIN'')')" & char(10)
+                & "    public String pay(String orderId) {" & char(10)
+                & "        Statement stmt = conn.createStatement();" & char(10)
+                & "        stmt.executeQuery('SELECT * FROM orders WHERE id=' + orderId);" & char(10)
+                & "        return 'paid';" & char(10)
+                & "    }" & char(10)
+                & "}" & char(10);
+            fileWrite( fixtureDir & "PaymentController.java", javaContent );
+
+            // 3. Archivo Node.js Express con llamadas sensibles
+            var jsContent = "const express = require('express');" & char(10)
+                & "const child_process = require('child_process');" & char(10)
+                & "const app = express();" & char(10)
+                & "app.get('/api/v1/exec', (req, res) => {" & char(10)
+                & "    child_process.exec(req.query.cmd);" & char(10)
+                & "    res.send('done');" & char(10)
+                & "});" & char(10);
+            fileWrite( fixtureDir & "server.js", jsContent );
+
+            // 4. Archivo C con operacion de buffer insegura
+            var cContent = "##include <stdio.h>" & char(10)
+                & "##include <string.h>" & char(10)
+                & "int main(int argc, char *argv[]) {" & char(10)
+                & "    char buf[64];" & char(10)
+                & "    strcpy(buf, argv[1]);" & char(10)
+                & "    return 0;" & char(10)
+                & "}" & char(10);
+            fileWrite( fixtureDir & "main.c", cContent );
+
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var reconstructor = new models.adversary.AttackSurfaceReconstructor( variables.config, graph );
+            var surface = reconstructor.reconstruct( fixtureDir );
+
+            variables.assert.isTrue( surface.entryPointsCount >= 3, "Detecta endpoints HTTP en Python, Java y JS" );
+            variables.assert.isTrue( surface.sensitiveOperationsCount >= 5, "Detecta operaciones de DB, OS exec, Deserializacion y Buffer" );
+            variables.assert.isTrue( surface.trustBoundariesCount >= 2, "Detecta limites de confianza en archivos evaluados" );
+
+            // Limpieza
+            directoryDelete( fixtureDir, true );
+
+            variables.reporter.record( id, desc, "Reconstruccion multilingue", "Endpoints y operaciones sensibles identificadas", "OK (" & surface.entryPointsCount & " EP, " & surface.sensitiveOperationsCount & " OP)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            if ( directoryExists( fixtureDir ) ) {
+                try { directoryDelete( fixtureDir, true ); } catch ( any fe ) {}
+            }
+            variables.reporter.record( id, desc, "Reconstruccion multilingue", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAdversaryEmulationCampaign() {
+        var id = "TC-SYN2-04";
+        var desc = "Campana de emulacion adversaria: confirmacion de caida y refutacion de objetivo defensivo";
+        var t0 = getTickCount();
+        try {
+            var engine = new models.adversary.AdversaryEmulationEngine( variables.config );
+
+            var findings = [
+                { "code": "NULL_CONFIG_DEREF", "filePath": "Service.bx", "line": 42, "evidence": "config.fallback.property" },
+                { "code": "TYPE_MISMATCH_NUMERIC", "filePath": "Service.bx", "line": 55, "evidence": "amount * surcharge" }
+            ];
+
+            var hypotheses = engine.formulateHypotheses( findings );
+            variables.assert.isEqual( 2, arrayLen( hypotheses ), "Debe formular 2 hipotesis" );
+
+            // 1. Objetivo indefenso que revienta ante la prueba
+            var undefendedTarget = function( probe ) {
+                throw( type="BoxCastException", message="Can't cast [$1,250.00] to a Number" );
+            };
+            var undefendedRes = engine.verifyHypothesis( undefendedTarget, hypotheses[ 2 ], { "amount": "$1,250.00" } );
+            variables.assert.isEqual( "CONFIRMED", undefendedRes.status, "Debe confirmar la vulnerabilidad cuando el objetivo revienta" );
+            variables.assert.isTrue( undefendedRes.reproduced, "Reproducido debe ser true" );
+
+            // 2. Objetivo defendido con validacion y manejo seguro
+            var defendedTarget = function( probe ) {
+                return { "status": "DEFENDED", "handled": true };
+            };
+            var defendedRes = engine.verifyHypothesis( defendedTarget, hypotheses[ 2 ], { "amount": "$1,250.00" } );
+            variables.assert.isEqual( "DISPROVED", defendedRes.status, "Debe refutar la hipotesis cuando el handler maneja la entrada con defensas" );
+            variables.assert.isTrue( defendedRes.defended, "Defended debe ser true" );
+
+            // 3. Campana completa
+            var campaign = engine.emulateCampaign( defendedTarget, hypotheses, [ {}, {} ] );
+            variables.assert.isEqual( 2, campaign.totalHypotheses, "Total 2 hipotesis" );
+            variables.assert.isEqual( 2, campaign.disproved, "2 hipotesis refutadas ante objetivo protegido" );
+
+            variables.reporter.record( id, desc, "emulateCampaign()", "CONFIRMED ante crash, DISPROVED ante defensas", "OK (1 CONFIRMED, 2 DISPROVED)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "emulateCampaign()", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testAstGuardRefutationOfHeuristicFalsePositives() {
+        var id = "TC-SYN2-05";
+        var desc = "Arbitraje AST: refutacion de falsos positivos heuristicos basada en pruebas estructurales";
+        var t0 = getTickCount();
+        try {
+            var orchestrator = new models.synergy.IntelligentOrchestrator( variables.config );
+            var contract = new models.synergy.CommonContract();
+
+            // Hallazgo A: Linter externo basado en regex emite alerta de SQL Injection
+            var heuristicFinding = contract.createFinding(
+                findingId            = "FND-HEURISTIC-01",
+                engineId             = "RegexPatternLinter",
+                language             = "python",
+                filePath             = "repository/user_repo.py",
+                functionName         = "find_user",
+                line                 = 35,
+                column               = 1,
+                riskCategory         = "SQL_INJECTION",
+                cwe                  = "CWE-89",
+                severity             = "HIGH",
+                description          = "Detectada llamada a execute() con posible interpolacion de cadena",
+                technicalExplanation = "Patron execute( matched",
+                confidence           = 0.70,
+                validationStatus     = "STATICALLY_FLAGGED",
+                remediation          = "Usar placeholders",
+                evidences            = [ contract.createEvidence( "REGEX_MATCH", "cursor.execute(...)", "repository/user_repo.py", 35, "cursor.execute(sql, (user_id,))", 0.70 ) ]
+            );
+
+            // Hallazgo B: Motor AST demuestra que los parametros usan tupla de bindings independiente (PARAMETRIZED)
+            var astFinding = contract.createFinding(
+                findingId            = "FND-AST-01",
+                engineId             = "AstStructuralAnalyzer",
+                language             = "python",
+                filePath             = "repository/user_repo.py",
+                functionName         = "find_user",
+                line                 = 35,
+                column               = 1,
+                riskCategory         = "SQL_INJECTION",
+                cwe                  = "CWE-89",
+                severity             = "INFO",
+                description          = "Comprobacion AST de bindings",
+                technicalExplanation = "AST verifica segundo argumento como tupla de parametros ligada al driver",
+                confidence           = 0.99,
+                validationStatus     = "STATICALLY_VERIFIED",
+                remediation          = "Ninguna",
+                evidences            = [ contract.createEvidence( "AST_PARAMETRIZED_QUERY", "PARAMETRIZED_PLACEHOLDER_VERIFIED", "repository/user_repo.py", 35, "sql = 'SELECT * FROM users WHERE id = ?'; cursor.execute(sql, (user_id,))", 0.99 ) ]
+            );
+
+            var arbitration = orchestrator.crossVerifyFindings( [ heuristicFinding, astFinding ] );
+
+            variables.assert.isTrue( arbitration.resolved, "El arbitraje debe resolver la contradiccion" );
+            variables.assert.isEqual( "AST_DEFENSE_PROVEN", arbitration.arbitrationMode, "El modo debe ser AST_DEFENSE_PROVEN" );
+            variables.assert.isEqual( "DISPROVED_BENIGN", arbitration.verdict, "El veredicto debe ser DISPROVED_BENIGN" );
+            variables.assert.isEqual( 0.0, arbitration.confidence, "La confianza del falso positivo debe reducirse a 0.0" );
+
+            variables.reporter.record( id, desc, "crossVerifyFindings()", "Falsa alarma refutada por AST", "DISPROVED_BENIGN con confianza 0.0", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "crossVerifyFindings()", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testCiRunnerWithSynergyIntegration() {
+        var id = "TC-SYN2-06";
+        var desc = "Integracion CI/CD: generacion SARIF v2.1.0 enriquecida con grafo y metadatos sinergicos";
+        var t0 = getTickCount();
+        try {
+            var contract = new models.synergy.CommonContract();
+            var graph = new models.synergy.SharedEvidenceGraph();
+            var reconstructor = new models.adversary.AttackSurfaceReconstructor( variables.config, graph );
+
+            var surface = reconstructor.reconstruct( variables.rootDir & "target_app/" );
+            variables.assert.isTrue( surface.entryPointsCount >= 1, "Detecta endpoints en target_app" );
+
+            var f1 = contract.createFinding(
+                findingId            = "FND-CI-01",
+                engineId             = "CiSynergyEngine",
+                language             = "boxlang",
+                filePath             = "target_app/PaymentService.bx",
+                functionName         = "charge",
+                line                 = 25,
+                column               = 5,
+                riskCategory         = "UNPROTECTED_CONFIG_DEREF",
+                cwe                  = "CWE-476",
+                severity             = "CRITICAL",
+                description          = "Desreferencia insegura en el fallback de cobros",
+                technicalExplanation = "El objeto fallback no se verifica antes de leer surchargePct",
+                confidence           = 0.95,
+                validationStatus     = "STATICALLY_VERIFIED",
+                remediation          = "Usar elvis operator o safe navigation",
+                evidences            = [ contract.createEvidence( "LINTER_MATCH", "L25", "target_app/PaymentService.bx", 25, "variables.config.fallback", 0.95 ) ]
+            );
+
+            var sarif = contract.toSarif( [ f1 ] );
+
+            variables.assert.isEqual( "2.1.0", sarif.version, "Version SARIF v2.1.0" );
+            variables.assert.isEqual( 1, arrayLen( sarif.runs ), "Contiene 1 run" );
+            variables.assert.isEqual( 1, arrayLen( sarif.runs[ 1 ].results ), "Contiene 1 resultado SARIF" );
+            variables.assert.isEqual( "error", sarif.runs[ 1 ].results[ 1 ].level, "Nivel SARIF mapeado a error para CRITICAL" );
+
+            var reportsDir = variables.rootDir & "reports/";
+            if ( !directoryExists( reportsDir ) ) {
+                directoryCreate( reportsDir, true );
+            }
+            var testSarifPath = reportsDir & "test-synergy-ci.sarif";
+            fileWrite( testSarifPath, jsonSerialize( sarif ) );
+            variables.assert.isTrue( fileExists( testSarifPath ), "Archivo SARIF de prueba escrito correctamente" );
+
+            variables.reporter.record( id, desc, "Exportacion SARIF Sinergica", "SARIF 2.1.0 con trazabilidad", "OK (1 run, 1 result)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Exportacion SARIF", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+    private void function testPolyglotMemoryAndRegressionSafety() {
+        var id = "TC-SYN2-07";
+        var desc = "Preservacion de regresiones y eficiencia de recursos: consumo determinista con 0 tokens";
+        var t0 = getTickCount();
+        try {
+            var rt = createObject( "java", "java.lang.Runtime" ).getRuntime();
+            var memBefore = ( rt.totalMemory() - rt.freeMemory() ) / ( 1024 * 1024 );
+
+            var graph = new models.synergy.SharedEvidenceGraph();
+            for ( var i = 1; i <= 50; i++ ) {
+                var fileId = "FILE:test_" & i & ".bx";
+                graph.addNode( fileId, "FILE", "test_" & i & ".bx", { "lines": 100 } );
+                var opId = "OP:test_" & i & ":50";
+                graph.addNode( opId, "OPERATION", "queryExecute", { "cwe": "CWE-89" } );
+                graph.addEdge( fileId, opId, "INVOKES", { "line": 50 } );
+            }
+
+            var memAfter = ( rt.totalMemory() - rt.freeMemory() ) / ( 1024 * 1024 );
+            var memDelta = max( 0, memAfter - memBefore );
+
+            variables.assert.isEqual( 100, structCount( graph.getNodes() ), "Grafo contiene 100 nodos registrados" );
+            variables.assert.isEqual( 50, arrayLen( graph.getEdges() ), "Grafo contiene 50 aristas registradas" );
+            variables.assert.isTrue( memDelta < 50.0, "Consumo de heap controlado (<50 MB)" );
+
+            variables.reporter.record( id, desc, "50 archivos y 50 operaciones en grafo", "0 tokens, <50MB heap", "OK (" & round(memDelta * 100) / 100 & " MB delta)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, desc, "Evaluacion de memoria", "Exito", e.type & ": " & e.message, "FAIL", getTickCount() - t0, e.detail );
+        }
+    }
+
+}

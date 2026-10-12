@@ -1,0 +1,216 @@
+/**
+ * PythonEcosystem - Modulo de conocimiento especializado y analizador estatico determinista para Python.
+ *
+ * Fuente: Python Software Foundation (PSF), PEP Standards (PEP 8, PEP 518, PEP 484), Bandit AST, MITRE CWE.
+ * Confiabilidad: OFFICIAL_DOCUMENTED | STANDARDIZED
+ */
+class {
+
+    public any function init() {
+        variables.name        = "Python";
+        variables.version     = "Python 3.8 - 3.12+";
+        variables.provenance  = "Python Software Foundation / PEP Standards / Bandit Security Rules";
+        variables.lastUpdated = "2026-10-11";
+        variables.reliability = "OFFICIAL_DOCUMENTED";
+        return this;
+    }
+
+    public struct function getMetadata() {
+        return {
+            "name"           : variables.name,
+            "version"        : variables.version,
+            "provenance"     : variables.provenance,
+            "lastUpdated"    : variables.lastUpdated,
+            "reliability"    : variables.reliability,
+            "buildTools"     : [ "Pip / Wheel", "Poetry", "Hatch", "Flit" ],
+            "testFrameworks" : [ "pytest", "unittest", "hypothesis" ],
+            "packageManagers": [ "PyPI (pip)", "Poetry", "pipenv", "conda" ],
+            "linters"        : [ "ruff", "flake8", "mypy", "pylint", "bandit" ]
+        };
+    }
+
+    public array function getCommonErrorsCatalog() {
+        return [
+            {
+                "code"        : "PYTHON_KEY_ERROR_DICT",
+                "cwe"         : "CWE-476",
+                "severity"    : "HIGH",
+                "title"       : "KeyError al acceder a claves ausentes en diccionarios",
+                "symptoms"    : "Traceback con 'KeyError: <clave>' al indexar dict['clave']",
+                "rootCause"   : "Indexacion directa con corchetes sin valor por defecto ni comprobacion previa 'key in dict'",
+                "remediation" : "Utilizar dict.get(key, default) o verificar 'if key in dict:' antes de acceder",
+                "exampleVuln" : "val = config['database']['port']",
+                "exampleFixed": "val = config.get('database', {}).get('port', 5432)"
+            },
+            {
+                "code"        : "PYTHON_INSECURE_PICKLE",
+                "cwe"         : "CWE-502",
+                "severity"    : "CRITICAL",
+                "title"       : "Deserializacion no segura con pickle.loads() (CWE-502)",
+                "symptoms"    : "Ejecucion remota de codigo arbitrario al cargar objetos serializados con pickle",
+                "rootCause"   : "pickle ejecuta el metodo __reduce__ de clases deserializadas permitiendo invocar os.system",
+                "remediation" : "Reemplazar pickle por serializacion segura basada en JSON o Protocol Buffers",
+                "exampleVuln" : "data = pickle.loads(untrusted_bytes)",
+                "exampleFixed": "data = json.loads(untrusted_bytes.decode('utf-8'))"
+            },
+            {
+                "code"        : "PYTHON_COMMAND_INJECTION_SHELL",
+                "cwe"         : "CWE-78",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion de comandos con os.system o subprocess shell=True (CWE-78)",
+                "symptoms"    : "Ejecucion de comandos de shell concatenados con entrada de usuario",
+                "rootCause"   : "Uso de shell=True en subprocess o llamadas directas a os.system(cmd + arg)",
+                "remediation" : "Usar subprocess.run(args, shell=False) pasando una lista de argumentos validados",
+                "exampleVuln" : "subprocess.run(f'ping {host}', shell=True)",
+                "exampleFixed": "subprocess.run(['ping', '-c', '1', host], shell=False, check=True)"
+            },
+            {
+                "code"        : "PYTHON_SQL_INJECTION_FORMAT",
+                "cwe"         : "CWE-89",
+                "severity"    : "CRITICAL",
+                "title"       : "Inyeccion SQL por formateo de cadenas f-strings o % (CWE-89)",
+                "symptoms"    : "Consultas SQL manipuladas dinamicamente mediante interpolacion de strings",
+                "rootCause"   : "cursor.execute(f'SELECT ... {userInput}') en lugar de parametros vinculados",
+                "remediation" : "Utilizar consultas parametrizadas cursor.execute('SELECT ... WHERE id = %s', (user_id,))",
+                "exampleVuln" : "cursor.execute(f'SELECT * FROM users WHERE email = {email}')",
+                "exampleFixed": "cursor.execute('SELECT * FROM users WHERE email = %s', (email,))"
+            },
+            {
+                "code"        : "PYTHON_MUTABLE_DEFAULT_ARG",
+                "cwe"         : "CWE-665",
+                "severity"    : "MEDIUM",
+                "title"       : "Argumento por defecto mutable en definicion de funcion",
+                "symptoms"    : "Datos persistiendo entre distintas llamadas a la funcion generando efectos colaterales",
+                "rootCause"   : "def foo(items=[]): la lista por defecto se evalua una sola vez en tiempo de definicion",
+                "remediation" : "Usar None como valor por defecto: def foo(items=None): if items is None: items = []",
+                "exampleVuln" : "def append_to(element, target_list=[]):\n    target_list.append(element)\n    return target_list",
+                "exampleFixed": "def append_to(element, target_list=None):\n    if target_list is None:\n        target_list = []\n    target_list.append(element)\n    return target_list"
+            },
+            {
+                "code"        : "PYTHON_BARE_EXCEPT_PASS",
+                "cwe"         : "CWE-390",
+                "severity"    : "MEDIUM",
+                "title"       : "Bloque except vacio con pass silenciando excepciones y Ctrl+C",
+                "symptoms"    : "Silenciamiento total de errores, impidiendo capturar SystemExit y KeyboardInterrupt",
+                "rootCause"   : "except: pass o except Exception: pass sin logging",
+                "remediation" : "Capturar excepciones especificas y registrar con logging.exception()",
+                "exampleVuln" : "try:\n    do_task()\nexcept:\n    pass",
+                "exampleFixed": "try:\n    do_task()\nexcept SpecificError as e:\n    logger.error('Fallo en tarea', exc_info=True)"
+            }
+        ];
+    }
+
+    public array function evaluateStaticRules( required string filePath, required string content, required array lines ) {
+        var issues = [];
+
+        for ( var i = 1; i <= arrayLen( arguments.lines ); i++ ) {
+            var line = arguments.lines[ i ];
+            var trimmed = trim( line );
+
+            if ( left( trimmed, 1 ) == "##" || len( trimmed ) == 0 ) {
+                continue;
+            }
+
+            // 1. Inyeccion SQL en cursores DB-API
+            if ( reFindNoCase( "cursor\.execute\s*\(\s*f[""'][^""']*\{", line ) || ( findNoCase( "cursor.execute", line ) && ( find( " % ", line ) || find( " + ", line ) ) ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_SQL_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-89",
+                    "language"   : "Python",
+                    "description": "Interpolacion dinamica f-string o formateo en cursor SQL (CWE-89).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar parametros de sustitucion DB-API: cursor.execute(query, (params,))."
+                } );
+            }
+
+            // 2. Inyeccion de comandos con shell=True o os.system
+            if ( reFindNoCase( "(subprocess\.(Popen|run|call|check_output)\s*\([^)]*shell\s*=\s*True|os\.system\s*\()", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_COMMAND_INJECTION",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-78",
+                    "language"   : "Python",
+                    "description": "Ejecucion de comandos de shell vulnerable a inyeccion (CWE-78).",
+                    "evidence"   : trimmed,
+                    "remediation": "Desactivar shell=True y pasar argumentos validados como lista de strings."
+                } );
+            }
+
+            // 3. Insecure eval / exec
+            if ( reFindNoCase( "\b(eval|exec)\s*\([^)]+", line ) && !find( "ast.literal_eval", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_INSECURE_EVAL",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-95",
+                    "language"   : "Python",
+                    "description": "Uso de eval() o exec() para evaluar codigo dinamico arbitrario (CWE-95).",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar ast.literal_eval() para estructuras literales seguras."
+                } );
+            }
+
+            // 4. Pickle deserialization
+            if ( reFindNoCase( "pickle\.(loads|load)\s*\(", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_INSECURE_PICKLE",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-502",
+                    "language"   : "Python",
+                    "description": "Deserializacion insegura con pickle vulnerable a ejecucion de codigo (CWE-502).",
+                    "evidence"   : trimmed,
+                    "remediation": "Sustituir pickle por formatos estructurados como JSON o MsgPack."
+                } );
+            }
+
+            // 5. Secretos en duro
+            if ( reFindNoCase( "(api_key|secret_key|jwt_secret|password)\s*=\s*[""'][A-Za-z0-9_\-\.]{16,}[""']", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_HARDCODED_SECRET",
+                    "severity"   : "CRITICAL",
+                    "cwe"        : "CWE-798",
+                    "language"   : "Python",
+                    "description": "Secreto o clave de API expuesta en codigo Python (CWE-798).",
+                    "evidence"   : trimmed,
+                    "remediation": "Cargar credenciales desde variables de entorno con os.getenv()."
+                } );
+            }
+
+            // 6. Argumento por defecto mutable
+            if ( reFindNoCase( "def\s+[a-zA-Z0-9_]+\s*\([^)]*=\s*(\[\]|\{\})", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_MUTABLE_DEFAULT_ARG",
+                    "severity"   : "MEDIUM",
+                    "cwe"        : "CWE-665",
+                    "language"   : "Python",
+                    "description": "Argumento por defecto mutable (lista o diccionario) retiene estado entre llamadas.",
+                    "evidence"   : trimmed,
+                    "remediation": "Utilizar 'arg=None' y asignar 'arg = []' dentro del cuerpo de la funcion."
+                } );
+            }
+
+            // 7. Except silencioso con pass
+            if ( reFindNoCase( "except(\s+[a-zA-Z0-9_]+)?\s*:\s*pass", line ) ) {
+                arrayAppend( issues, {
+                    "line"       : i,
+                    "code"       : "PYTHON_EMPTY_EXCEPT_PASS",
+                    "severity"   : "MEDIUM",
+                    "cwe"        : "CWE-390",
+                    "language"   : "Python",
+                    "description": "Bloque except silenciando excepciones mediante pass sin registro (CWE-390).",
+                    "evidence"   : trimmed,
+                    "remediation": "Registrar el error con logging.error() o relanzar excepcion."
+                } );
+            }
+        }
+
+        return issues;
+    }
+
+}

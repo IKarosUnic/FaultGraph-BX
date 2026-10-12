@@ -1,0 +1,9 @@
+/**
+ * Recall Gap: Unvalidated numeric cast on generic arguments (price * quantity)
+ * FaultGraph specifically hardcodes arguments.amount or surchargePct.
+ */
+class {
+    function calculateTotal( required any price, required any quantity ) {
+        return arguments.price * arguments.quantity;
+    }
+}

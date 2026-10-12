@@ -1,0 +1,103 @@
+/**
+ * EventBus - Bus de eventos e interceptores nativo desacoplado para FaultGraph-BX.
+ *
+ * Mision:
+ *   Desacopla la orquestacion del ciclo de vida del incidente mediante un patron Pub/Sub de alto rendimiento.
+ *   Permite adjuntar interceptores de telemetria, observabilidad, auditoria o alertas en tiempo real.
+ *
+ * Eventos soportados en el ciclo de contingencia:
+ *   - onIncidentStart
+ *   - onStaticInspection
+ *   - onChaosExecutionStart
+ *   - onScenarioCompleted
+ *   - onChaosExecutionEnd
+ *   - onDiagnosisCompleted
+ *   - onPatchSynthesized
+ *   - onVerificationCompleted
+ *   - onIncidentResolved
+ */
+class {
+
+    public any function init() {
+        variables.listeners = {};
+        variables.history   = [];
+        variables.enabled   = true;
+        return this;
+    }
+
+    public boolean function isEnabled() {
+        return variables.enabled;
+    }
+
+    public void function setEnabled( required boolean enabled ) {
+        variables.enabled = arguments.enabled;
+    }
+
+    /**
+     * Registra un interceptor o listener para un evento especifico.
+     */
+    public void function on( required string eventName, required any listener ) {
+        var evt = lcase( trim( arguments.eventName ) );
+        if ( !structKeyExists( variables.listeners, evt ) ) {
+            variables.listeners[ evt ] = [];
+        }
+        arrayAppend( variables.listeners[ evt ], arguments.listener );
+    }
+
+    /**
+     * Emite un evento a todos los interceptores suscritos y registra telemetria.
+     */
+    public void function emit( required string eventName, struct payload = {} ) {
+        if ( !variables.enabled ) {
+            return;
+        }
+
+        var evt = lcase( trim( arguments.eventName ) );
+        var eventRecord = {
+            "event"     : arguments.eventName,
+            "timestamp" : getTickCount(),
+            "payload"   : arguments.payload,
+            "handledBy" : 0
+        };
+
+        if ( structKeyExists( variables.listeners, evt ) && isArray( variables.listeners[ evt ] ) ) {
+            for ( var listener in variables.listeners[ evt ] ) {
+                try {
+                    listener( arguments.payload );
+                    eventRecord.handledBy = eventRecord.handledBy + 1;
+                } catch ( any e ) {
+                    // Un fallo en un interceptor no debe interrumpir la contingencia critica
+                    eventRecord[ "listenerError" ] = e.message;
+                }
+            }
+        }
+
+        // Puente a InterceptorService nativo de BoxLang para observabilidad global y desacoplamiento
+        try {
+            var rt       = createObject( "java", "ortus.boxlang.runtime.BoxRuntime" ).getInstance();
+            var keyClass = createObject( "java", "ortus.boxlang.runtime.scopes.Key" );
+            rt.getInterceptorService().announce( keyClass.of( arguments.eventName ), arguments.payload );
+        } catch ( any bridgeEx ) {
+            // Ignorar limpiamente en contextos donde el bus global no intercepte
+        }
+
+        arrayAppend( variables.history, eventRecord );
+    }
+
+    public array function getHistory() {
+        return variables.history;
+    }
+
+    public void function clearHistory() {
+        variables.history = [];
+    }
+
+    public numeric function countListeners( required string eventName ) {
+        var evt = lcase( trim( arguments.eventName ) );
+        if ( structKeyExists( variables.listeners, evt ) && isArray( variables.listeners[ evt ] ) ) {
+            return arrayLen( variables.listeners[ evt ] );
+        }
+        return 0;
+    }
+
+}

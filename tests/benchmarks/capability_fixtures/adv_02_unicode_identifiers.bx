@@ -1,0 +1,9 @@
+/**
+ * Adversarial: Valid BoxLang with UTF-8 / non-ASCII identifiers and characters
+ */
+class {
+    function calcularTotal( required numeric montoBruto, numeric tasaRecargo = 0.05 ) {
+        var recargoCalculado = arguments.montoBruto * arguments.tasaRecargo;
+        return arguments.montoBruto + recargoCalculado;
+    }
+}

@@ -1,0 +1,205 @@
+/**
+ * KnowledgeBaseTest - Banco de pruebas unitarias y de resiliencia para KnowledgeBase.
+ */
+class {
+
+    public any function init( required string rootDir, required any reporter, required any assert ) {
+        variables.rootDir  = arguments.rootDir;
+        variables.reporter = arguments.reporter;
+        variables.assert   = arguments.assert;
+        return this;
+    }
+
+    public void function run() {
+        testInstantiationAndSeedCatalog();
+        testSearchAndRelevanceScoring();
+        testCategoryFilter();
+        testDeduplicationDeterministic();
+        testContractValidation();
+        testGetEntryById();
+        testRecordDiagnosticHistory();
+        testStatsAggregation();
+    }
+
+    private void function testInstantiationAndSeedCatalog() {
+        var id = "TC-KB-01";
+        var scenario = "Instanciacion de KnowledgeBase y carga del catalogo semilla";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            variables.assert.isTrue( kb.count() >= 7, "Debe cargar al menos 7 entradas semilla" );
+            variables.reporter.record( id, scenario, "Catalogo semilla inicial", ">= 7 entradas cargadas", "Carga completa (" & kb.count() & " entradas)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Carga semilla", ">= 7 entradas", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testSearchAndRelevanceScoring() {
+        var id = "TC-KB-02";
+        var scenario = "Busqueda ponderada de terminos y recuperacion contextual";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var hits = kb.search( "BoxCastException percentage surchargePct", "", 3 );
+            variables.assert.isTrue( isArray( hits ) );
+            variables.assert.isTrue( arrayLen( hits ) > 0, "Debe retornar al menos 1 resultado relevante" );
+            variables.assert.isEqual( "KB-BXL-001", hits[ 1 ].id, "La entrada mas relevante debe ser KB-BXL-001" );
+            variables.assert.isTrue( hits[ 1 ].relevanceScore > 30, "Puntuacion de relevancia debe ser > 30" );
+
+            variables.reporter.record( id, scenario, "Busqueda de BoxCastException", "Top hit KB-BXL-001 con score > 30", "Hit exacto con score " & hits[ 1 ].relevanceScore, "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Busqueda ponderada", "Top hit KB-BXL-001", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testCategoryFilter() {
+        var id = "TC-KB-03";
+        var scenario = "Filtrado estricto por categoria tecnica";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var hitsSecurity = kb.search( "traversal validation", "SECURITY_CWE", 5 );
+            variables.assert.isTrue( arrayLen( hitsSecurity ) > 0 );
+            for ( var h in hitsSecurity ) {
+                variables.assert.isEqual( "SECURITY_CWE", h.category, "Todas las entradas deben ser de la categoria SECURITY_CWE" );
+            }
+
+            variables.reporter.record( id, scenario, "Filtro por categoria SECURITY_CWE", "100% de coincidencias en categoria", "Filtrado verificado (" & arrayLen( hitsSecurity ) & " hits)", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Filtro categoria", "SECURITY_CWE", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testDeduplicationDeterministic() {
+        var id = "TC-KB-04";
+        var scenario = "Deduplicacion determinista mediante hash SHA-256";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var customEntry = {
+                "id"               : "KB-TEST-001",
+                "title"            : "Prueba de Deduplicacion Hash",
+                "category"         : "BOXLANG_RUNTIME",
+                "source"           : "Test Harness",
+                "date"             : "2026-10-10",
+                "version"          : "1.0",
+                "reliability"      : "OFFICIAL_DOCUMENTED",
+                "scope"            : "RUNTIME",
+                "verificationLevel": "DOCUMENTED_FACT",
+                "tags"             : [ "test", "hash" ],
+                "summary"          : "Entrada para evaluar rechazo de duplicados identicos."
+            };
+
+            var addedFirst = kb.addEntry( customEntry );
+            var addedSecond = kb.addEntry( customEntry );
+
+            variables.assert.isTrue( addedFirst, "La primera insercion debe tener exito" );
+            variables.assert.isFalse( addedSecond, "La segunda insercion identica debe ser rechazada por duplicacion" );
+
+            variables.reporter.record( id, scenario, "Insercion repetida de entrada identica", "Primer add=true, segundo add=false", "Deduplicacion SHA-256 confirmada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Deduplicacion", "Rechazo duplicado", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testContractValidation() {
+        var id = "TC-KB-05";
+        var scenario = "Validacion formal de contrato y rechazo de esquemas incompletos";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var invalidEntry = { "title": "Sin ID ni categoria" };
+            var threw = false;
+            try {
+                kb.addEntry( invalidEntry );
+            } catch ( KnowledgeBase.InvalidContract ex ) {
+                threw = true;
+            }
+
+            variables.assert.isTrue( threw, "Debe lanzar excepcion KnowledgeBase.InvalidContract" );
+            variables.reporter.record( id, scenario, "Validacion de contrato schema", "Lanza KnowledgeBase.InvalidContract", "Rechazo seguro de contrato incompleto", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Validacion contrato", "Excepcion esperada", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testGetEntryById() {
+        var id = "TC-KB-06";
+        var scenario = "Recuperacion directa por identificador unico";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var item = kb.getEntry( "KB-SEC-918" );
+            variables.assert.isNotNull( item );
+            variables.assert.isEqual( "SECURITY_CWE", item.category );
+            variables.assert.isTrue( findNoCase( "SSRF", item.title ) > 0 );
+
+            var nonExistent = kb.getEntry( "KB-NON-EXISTENT" );
+            variables.assert.isNullVal( nonExistent );
+
+            variables.reporter.record( id, scenario, "Recuperacion por ID", "Entrada obtenida correctamente y null para no existente", "Recuperacion O(1) confirmada", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Recuperacion por ID", "KB-SEC-918", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testRecordDiagnosticHistory() {
+        var id = "TC-KB-07";
+        var scenario = "Ingesta y persistencia del historial de diagnosticos confirmados";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var mockIncident = {
+                "diagnosis": { "causes": [ { "code": "TYPE_MISMATCH_NUMERIC" }, { "code": "NULL_CONFIG_DEREF" } ] },
+                "verified" : true
+            };
+
+            var histId = kb.recordDiagnosticHistory( mockIncident );
+            variables.assert.isTrue( left( histId, 5 ) == "HIST-" );
+
+            var recorded = kb.getEntry( histId );
+            variables.assert.isNotNull( recorded );
+            variables.assert.isEqual( "DIAGNOSTIC_HISTORY", recorded.category );
+            variables.assert.isEqual( "EXPERIMENTAL_PROVEN", recorded.verificationLevel );
+
+            variables.reporter.record( id, scenario, "Ingesta de incidente resuelto", "Id HIST-... con verificationLevel EXPERIMENTAL_PROVEN", "Historial empirico persistido", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Ingesta historial", "EXPERIMENTAL_PROVEN", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+    private void function testStatsAggregation() {
+        var id = "TC-KB-08";
+        var scenario = "Agregacion de estadisticas por categoria, confiabilidad y verificacion";
+        var t0 = getTickCount();
+        try {
+            var cfg = new config.Config( variables.rootDir );
+            var kb  = new models.KnowledgeBase( cfg );
+
+            var stats = kb.getStats();
+            variables.assert.isTrue( stats.totalEntries >= 7 );
+            variables.assert.isTrue( structKeyExists( stats.byCategory, "BOXLANG_RUNTIME" ) );
+            variables.assert.isTrue( structKeyExists( stats.byCategory, "SECURITY_CWE" ) );
+            variables.assert.isTrue( structKeyExists( stats.byVerificationLevel, "DOCUMENTED_FACT" ) );
+
+            variables.reporter.record( id, scenario, "Estadisticas de conocimiento", "Metricas agregadas coherentes", "Estadisticas calculadas correctamente", "PASS", getTickCount() - t0 );
+        } catch ( any e ) {
+            variables.reporter.record( id, scenario, "Estadisticas KB", "Totales coherentes", e.type & ": " & e.message, "FAIL", getTickCount() - t0 );
+        }
+    }
+
+}

@@ -1,0 +1,24 @@
+/**
+ * benchmark_paradigms.bxs - Evaluacion Comparativa Formal de los 4 Paradigmas (A, B, C, D).
+ *
+ *   boxlang benchmark_paradigms.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+bench = new tests.benchmarks.FourParadigmBenchmark( rootDir );
+results = bench.runBenchmark();
+bench.printReport( results );
+
+// Guardar reporte formal en reports/
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "four-paradigm-benchmark.json";
+fileWrite( outputPath, jsonSerialize( results ) );
+println( "Metricas guardadas en: " & outputPath );
+println( "" );

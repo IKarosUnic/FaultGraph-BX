@@ -1,0 +1,344 @@
+/**
+ * SharedEvidenceGraph.bx - Grafo de Conocimiento y Evidencias Compartido para FaultGraph-BX.
+ *
+ * Misión:
+ *   1. Relaciona archivos, funciones, componentes, dependencias, flujos de datos,
+ *      vulnerabilidades, evidencias, hipótesis, pruebas y correcciones.
+ *   2. Permite que un motor aproveche el trabajo previo de otro, evitando análisis redundantes.
+ *   3. Mantiene la trazabilidad estricta de cada conclusión hasta sus evidencias primitivas.
+ *   4. Descubre relaciones no evidentes al analizar cada módulo de manera aislada (trans-módulo).
+ *   5. Genera representaciones visuales automáticas en sintaxis Mermaid y estructuras serializables.
+ *
+ * 100% BoxLang nativo.
+ */
+class {
+
+    public any function init() {
+        variables.nodes     = {}; // id -> { id, type, label, data, createdAt }
+        variables.edges     = []; // array de { source, target, type, metadata }
+        variables.edgeIndex = {}; // "source->target:type" -> true para evitar duplicados
+        variables.cache     = {}; // cache de consultas del grafo
+        return this;
+    }
+
+    /**
+     * Agrega un nodo al grafo. Si ya existe, actualiza o enriquece sus metadatos.
+     */
+    public struct function addNode( required string id, required string type, string label = "", struct data = {} ) {
+        var cleanId = trim( arguments.id );
+        var nodeLabel = len( trim( arguments.label ) ) ? arguments.label : cleanId;
+
+        if ( structKeyExists( variables.nodes, cleanId ) ) {
+            // Enriquecer nodo existente sin sobrescribir datos previos arbitrariamente
+            for ( var k in arguments.data ) {
+                variables.nodes[ cleanId ].data[ k ] = arguments.data[ k ];
+            }
+            if ( len( trim( arguments.label ) ) ) {
+                variables.nodes[ cleanId ].label = nodeLabel;
+            }
+            return variables.nodes[ cleanId ];
+        }
+
+        var node = {
+            "id"        : cleanId,
+            "type"      : uCase( arguments.type ), // FILE, COMPONENT, ENDPOINT, FINDING, EVIDENCE, HYPOTHESIS, TEST, PATCH
+            "label"     : nodeLabel,
+            "data"      : arguments.data,
+            "createdAt" : dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+
+        variables.nodes[ cleanId ] = node;
+        variables.cache = {}; // Invalidar cache
+        return node;
+    }
+
+    public boolean function hasNode( required string id ) {
+        return structKeyExists( variables.nodes, trim( arguments.id ) );
+    }
+
+    public any function getNode( required string id ) {
+        var cleanId = trim( arguments.id );
+        if ( structKeyExists( variables.nodes, cleanId ) ) {
+            return duplicate( variables.nodes[ cleanId ] );
+        }
+        return null;
+    }
+
+    /**
+     * Agrega una arista dirigida entre dos nodos con validación y deduplicación.
+     */
+    public boolean function addEdge( required string sourceId, required string targetId, required string type, struct metadata = {} ) {
+        var s = trim( arguments.sourceId );
+        var t = trim( arguments.targetId );
+        var edgeType = uCase( trim( arguments.type ) ); // CONTAINS, INVOKES, EXPOSES, HAS_FINDING, SUPPORTED_BY, VERIFIED_BY, REFUTED_BY, FIXED_BY, CROSS_CALL
+
+        if ( !hasNode( s ) || !hasNode( t ) ) {
+            return false;
+        }
+
+        var key = s & "->" & t & ":" & edgeType;
+        if ( structKeyExists( variables.edgeIndex, key ) ) {
+            return true; // Ya existe
+        }
+
+        var edge = {
+            "source"   : s,
+            "target"   : t,
+            "type"     : edgeType,
+            "metadata" : arguments.metadata
+        };
+
+        arrayAppend( variables.edges, edge );
+        variables.edgeIndex[ key ] = true;
+        variables.cache = {};
+        return true;
+    }
+
+    public array function getNodes( string typeFilter = "" ) {
+        var result = [];
+        var filter = uCase( trim( arguments.typeFilter ) );
+        for ( var id in variables.nodes ) {
+            if ( len( filter ) == 0 || variables.nodes[ id ].type == filter ) {
+                arrayAppend( result, duplicate( variables.nodes[ id ] ) );
+            }
+        }
+        return result;
+    }
+
+    public array function getEdges( string typeFilter = "" ) {
+        var result = [];
+        var filter = uCase( trim( arguments.typeFilter ) );
+        for ( var edge in variables.edges ) {
+            if ( len( filter ) == 0 || edge.type == filter ) {
+                arrayAppend( result, duplicate( edge ) );
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Obtiene todos los predecesores directos de un nodo.
+     */
+    public array function getPredecessors( required string nodeId, string edgeTypeFilter = "" ) {
+        var targetId = trim( arguments.nodeId );
+        var filter = uCase( trim( arguments.edgeTypeFilter ) );
+        var preds = [];
+
+        for ( var edge in variables.edges ) {
+            if ( edge.target == targetId && ( len( filter ) == 0 || edge.type == filter ) ) {
+                if ( hasNode( edge.source ) ) {
+                    arrayAppend( preds, {
+                        "node": getNode( edge.source ),
+                        "edge": edge
+                    } );
+                }
+            }
+        }
+        return preds;
+    }
+
+    /**
+     * Obtiene todos los sucesores directos de un nodo.
+     */
+    public array function getSuccessors( required string nodeId, string edgeTypeFilter = "" ) {
+        var sourceId = trim( arguments.nodeId );
+        var filter = uCase( trim( arguments.edgeTypeFilter ) );
+        var succs = [];
+
+        for ( var edge in variables.edges ) {
+            if ( edge.source == sourceId && ( len( filter ) == 0 || edge.type == filter ) ) {
+                if ( hasNode( edge.target ) ) {
+                    arrayAppend( succs, {
+                        "node": getNode( edge.target ),
+                        "edge": edge
+                    } );
+                }
+            }
+        }
+        return succs;
+    }
+
+    /**
+     * Trazabilidad Total: reconstruye el camino completo desde cualquier conclusión
+     * (FINDING o HYPOTHESIS) hasta sus evidencias originales y el archivo fuente.
+     */
+    public struct function getTraceToEvidence( required string findingOrHypothesisId ) {
+        var startNode = getNode( arguments.findingOrHypothesisId );
+        if ( isNull( startNode ) ) {
+            return { "ok": false, "error": "Nodo no encontrado: " & arguments.findingOrHypothesisId };
+        }
+
+        var evidences = [];
+        var files = [];
+        var tests = [];
+        var patches = [];
+
+        // 1. Buscar evidencias que respaldan este nodo (aristas SUPPORTED_BY)
+        var succEv = getSuccessors( arguments.findingOrHypothesisId, "SUPPORTED_BY" );
+        for ( var item in succEv ) {
+            if ( item.node.type == "EVIDENCE" ) {
+                arrayAppend( evidences, item.node );
+            }
+        }
+
+        // 2. Buscar pruebas asociadas (VERIFIED_BY o REFUTED_BY)
+        var succTests = getSuccessors( arguments.findingOrHypothesisId, "VERIFIED_BY" );
+        for ( var tItem in succTests ) {
+            if ( tItem.node.type == "TEST" ) {
+                arrayAppend( tests, tItem.node );
+            }
+        }
+        var succRefuted = getSuccessors( arguments.findingOrHypothesisId, "REFUTED_BY" );
+        for ( var rItem in succRefuted ) {
+            if ( rItem.node.type == "TEST" ) {
+                arrayAppend( tests, rItem.node );
+            }
+        }
+
+        // 3. Buscar archivo de origen (predecesores con CONTAINS o HAS_FINDING)
+        var preds = getPredecessors( arguments.findingOrHypothesisId );
+        for ( var pItem in preds ) {
+            if ( pItem.node.type == "FILE" ) {
+                arrayAppend( files, pItem.node );
+            } else if ( pItem.node.type == "COMPONENT" || pItem.node.type == "ENDPOINT" ) {
+                // Rastrear el archivo que contiene este componente
+                var filePreds = getPredecessors( pItem.node.id, "CONTAINS" );
+                for ( var fp in filePreds ) {
+                    if ( fp.node.type == "FILE" ) {
+                        arrayAppend( files, fp.node );
+                    }
+                }
+            }
+        }
+
+        // 4. Buscar parches asociados (FIXED_BY)
+        var succPatches = getSuccessors( arguments.findingOrHypothesisId, "FIXED_BY" );
+        for ( var p in succPatches ) {
+            if ( p.node.type == "PATCH" ) {
+                arrayAppend( patches, p.node );
+            }
+        }
+
+        return {
+            "ok"          : true,
+            "target"      : startNode,
+            "sourceFiles" : files,
+            "evidences"   : evidences,
+            "tests"       : tests,
+            "patches"     : patches,
+            "isTraceable" : ( arrayLen( evidences ) > 0 || arrayLen( files ) > 0 )
+        };
+    }
+
+    /**
+     * Verifica si un archivo o componente ya ha sido analizado por una herramienta dada,
+     * permitiendo reutilizar resultados y evitar análisis redundantes.
+     */
+    public boolean function hasPriorAnalysis( required string targetId, required string engineId ) {
+        var succs = getSuccessors( arguments.targetId, "HAS_FINDING" );
+        for ( var s in succs ) {
+            if ( structKeyExists( s.node.data, "engineId" ) && s.node.data.engineId == arguments.engineId ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Detecta discrepancias de contrato trans-módulo entre endpoints expuestos y llamadas clientes.
+     */
+    public array function detectCrossModuleDiscrepancies() {
+        var issues = [];
+        var endpoints = {};
+        var calls = [];
+
+        var epNodes = getNodes( "ENDPOINT" );
+        for ( var ep in epNodes ) {
+            var route = structKeyExists( ep.data, "route" ) ? ep.data.route : ep.label;
+            endpoints[ route ] = ep;
+        }
+
+        var callEdges = getEdges( "CROSS_CALL" );
+        for ( var cEdge in callEdges ) {
+            var invokedRoute = structKeyExists( cEdge.metadata, "route" ) ? cEdge.metadata.route : "";
+            if ( len( invokedRoute ) > 0 && !structKeyExists( endpoints, invokedRoute ) && left( invokedRoute, 5 ) == "/api/" ) {
+                arrayAppend( issues, {
+                    "source"     : cEdge.source,
+                    "route"      : invokedRoute,
+                    "target"     : cEdge.target,
+                    "description": "Llamada trans-modulo a endpoint inexistente en backend: " & invokedRoute
+                } );
+            }
+        }
+        return issues;
+    }
+
+    /**
+     * Genera un diagrama Mermaid limpio y formal del grafo de conocimiento.
+     */
+    public string function renderMermaid( numeric maxNodes = 60 ) {
+        return toMermaid( arguments.maxNodes );
+    }
+
+    public string function toMermaid( numeric maxNodes = 60 ) {
+        var lines = [];
+        arrayAppend( lines, "graph TD" );
+
+        // Estilos de nodos segun tipo
+        var typeStyles = {
+            "FILE"       : "[%label%]",
+            "COMPONENT"  : "([%label%])",
+            "ENDPOINT"   : "{{%label%}}",
+            "FINDING"    : "{%label%}",
+            "HYPOTHESIS" : "[/%label%/]",
+            "EVIDENCE"   : ">%label%]",
+            "TEST"       : "[%label%]",
+            "PATCH"      : "((%label%))"
+        };
+
+        var count = 0;
+        for ( var id in variables.nodes ) {
+            count++;
+            if ( count > arguments.maxNodes ) {
+                arrayAppend( lines, "  moreNodes[... y mas nodos omitidos ...]" );
+                break;
+            }
+            var node = variables.nodes[ id ];
+            var safeId = reReplace( node.id, "[^a-zA-Z0-9_]", "_", "all" );
+            var safeLabel = reReplace( node.label, "[""'\(\)\[\]\{\}]", " ", "all" );
+            if ( len( safeLabel ) > 35 ) { safeLabel = left( safeLabel, 32 ) & "..."; }
+
+            var template = structKeyExists( typeStyles, node.type ) ? typeStyles[ node.type ] : "[%label%]";
+            var renderedNode = replace( template, "%label%", safeLabel );
+            arrayAppend( lines, "  " & safeId & renderedNode );
+        }
+
+        var edgeCount = 0;
+        for ( var edge in variables.edges ) {
+            edgeCount++;
+            if ( edgeCount > ( arguments.maxNodes * 2 ) ) {
+                break;
+            }
+            var sId = reReplace( edge.source, "[^a-zA-Z0-9_]", "_", "all" );
+            var tId = reReplace( edge.target, "[^a-zA-Z0-9_]", "_", "all" );
+            var label = edge.type;
+            arrayAppend( lines, "  " & sId & " -- " & label & " --> " & tId );
+        }
+
+        return arrayToList( lines, char( 10 ) );
+    }
+
+    /**
+     * Serializa el grafo completo a JSON estructurado.
+     */
+    public struct function exportGraph() {
+        return {
+            "totalNodes": structCount( variables.nodes ),
+            "totalEdges": arrayLen( variables.edges ),
+            "nodes"     : variables.nodes,
+            "edges"     : variables.edges,
+            "exportedAt": dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" )
+        };
+    }
+
+}

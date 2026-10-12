@@ -1,0 +1,77 @@
+/**
+ * benchmark_synergy.bxs
+ *
+ * Ejecutor CLI del Benchmark Comparativo: Motores Independientes (Config A) vs Motores Coordinados (Config B).
+ *
+ * Uso:
+ *   boxlang tests/benchmark_synergy.bxs
+ */
+
+rootDir = getDirectoryFromPath( getCurrentTemplatePath() );
+rootDir = replace( rootDir, "tests\", "" );
+rootDir = replace( rootDir, "tests/", "" );
+if ( right( rootDir, 1 ) != "/" && right( rootDir, 1 ) != char( 92 ) ) {
+    rootDir = rootDir & "/";
+}
+
+println( "============================================================" );
+println( " FAULTGRAPH-BX :: BENCHMARK COMPARATIVO DE SINERGIA (A vs B) " );
+println( "============================================================" );
+println( "Fecha y hora : " & dateTimeFormat( now(), "yyyy-MM-dd HH:mm:ss" ) );
+println( "Directorio   : " & rootDir );
+println( "" );
+
+benchmark = new tests.benchmarks.SynergyBaselineBenchmark( rootDir );
+report = benchmark.runComparison();
+
+println( "------------------------------------------------------------" );
+println( "1. RESULTADOS CONFIGURACION A (EN SILOS / INDEPENDIENTES):" );
+println( "------------------------------------------------------------" );
+a = report.configA;
+println( "True Positives  (TP)     : " & a.truePositives );
+println( "False Positives (FP)     : " & a.falsePositives );
+println( "True Negatives  (TN)     : " & a.trueNegatives );
+println( "False Negatives (FN)     : " & a.falseNegatives );
+println( "Precision                : " & a.precisionPct & " %" );
+println( "Recall (Cobertura)       : " & a.recallPct & " %" );
+println( "Analisis Redundantes     : " & a.redundantAnalysesCount );
+println( "Tiempo de Ejecucion      : " & a.durationMs & " ms" );
+println( "" );
+
+println( "------------------------------------------------------------" );
+println( "2. RESULTADOS CONFIGURACION B (SINERGIA Y GRAFO COMPARTIDO):" );
+println( "------------------------------------------------------------" );
+b = report.configB;
+println( "True Positives  (TP)     : " & b.truePositives );
+println( "False Positives (FP)     : " & b.falsePositives );
+println( "True Negatives  (TN)     : " & b.trueNegatives );
+println( "False Negatives (FN)     : " & b.falseNegatives );
+println( "Precision                : " & b.precisionPct & " %" );
+println( "Recall (Cobertura)       : " & b.recallPct & " %" );
+println( "Analisis Redundantes Evit: " & b.redundantAnalysesAvoided );
+println( "Hallazgos Extra Sinergia : " & b.synergyExtraFindings );
+println( "Nodos en Grafo           : " & b.graphNodes );
+println( "Aristas en Grafo         : " & b.graphEdges );
+println( "Tiempo de Ejecucion      : " & b.durationMs & " ms" );
+println( "" );
+
+println( "------------------------------------------------------------" );
+println( "3. GANANCIAS Y MEJORA DEMOSTRABLE (B vs A):" );
+println( "------------------------------------------------------------" );
+imp = report.improvements;
+println( "Delta de Precision       : +" & imp.precisionDeltaPct & " %" );
+println( "Delta de Recall          : +" & imp.recallDeltaPct & " %" );
+println( "Falsos Negativos Reducidos: " & imp.falseNegativesReduced );
+println( "Analisis Redundantes Evitados: " & imp.redundantAnalysesAvoided );
+println( "Hallazgos Trans-Modulo Nuevos: " & imp.cooperationExtraFindings );
+println( "Delta Memoria Heap JVM   : " & report.memoryDeltaMb & " MB" );
+println( "============================================================" );
+
+reportsDir = rootDir & "reports/";
+if ( !directoryExists( reportsDir ) ) {
+    directoryCreate( reportsDir, true );
+}
+outputPath = reportsDir & "synergy-benchmark-report.json";
+fileWrite( outputPath, jsonSerialize( report ) );
+println( "Reporte comparativo guardado en: " & outputPath );
+println( "============================================================" );

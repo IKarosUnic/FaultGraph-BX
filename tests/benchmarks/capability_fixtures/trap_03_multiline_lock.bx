@@ -1,0 +1,11 @@
+/**
+ * False-Positive Trap: Multiline lock block around application scope
+ * FaultGraph checks if line has 'lock'. Line 8 doesn't have 'lock', so triggers FP!
+ */
+class {
+    function incrementSafe() {
+        lock scope="application" timeout="10" {
+            application.txCount = application.txCount + 1;
+        }
+    }
+}

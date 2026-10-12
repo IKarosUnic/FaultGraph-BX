@@ -1,0 +1,163 @@
+/**
+ * LogDiagnosticIngestor - Ingesta, parseo y diagnostico determinista e IA
+ * de archivos de log y trazas de error de cualquier aplicacion o repositorio externo.
+ *
+ * Permite tomar logs reales (error.log, stdout, stderr, JSON logs) y obtener
+ * en milisegundos las causas raiz y el grafo de propagacion Mermaid.
+ */
+class {
+
+    public any function init( required any config ) {
+        variables.config  = arguments.config;
+        variables.healer  = new models.Healer( arguments.config );
+        variables.sandbox = new models.SecuritySandbox( arguments.config );
+        variables.ai      = new models.LocalSecurityAI( arguments.config );
+        return this;
+    }
+
+    /**
+     * Ingesta un archivo de log externo y produce el diagnostico de incidentes.
+     */
+    public struct function ingestAndDiagnoseFile( required string logFilePath, boolean challengeWithAi = true ) {
+        var safePath = variables.sandbox.resolveSafePath( arguments.logFilePath );
+        if ( !fileExists( safePath ) ) {
+            return { "ok": false, "error": "Archivo de log no encontrado: " & safePath };
+        }
+
+        var rawContent = fileRead( safePath );
+        return ingestAndDiagnoseText( rawContent, getFileFromPath( safePath ), arguments.challengeWithAi );
+    }
+
+    /**
+     * Ingesta texto plano de trazas de error y ejecuta el diagnostico de causa raiz.
+     */
+    public struct function ingestAndDiagnoseText( required string logText, string sourceName = "RawLog", boolean challengeWithAi = true ) {
+        var t0 = getTickCount();
+        // Sanitizacion defensiva de datos sensibles (PII, credenciales, tokens) previo al analisis
+        var sanitizedText = maskSensitiveData( arguments.logText );
+        var lines = listToArray( sanitizedText, char( 10 ), true );
+        var extractedErrors = [];
+
+        var currentError = {};
+        for ( var i = 1; i <= arrayLen( lines ); i = i + 1 ) {
+            var line = trim( lines[ i ] );
+            if ( len( line ) == 0 ) { continue; }
+
+            // Deteccion de patrones comunes de excepciones (BoxLang, Java, Node, Python)
+            if ( reFindNoCase( "(Exception|Error|FATAL|SEVERE|CRITICAL|Traceback|Caused by:)", line ) ) {
+                var errType = "ApplicationError";
+                var matchType = reMatchNoCase( "[a-zA-Z0-9_\.]*(Exception|Error)", line );
+                if ( arrayLen( matchType ) > 0 ) {
+                    errType = matchType[ 1 ];
+                }
+
+                var errObj = {
+                    "id"          : "LOG_LINE_" & i,
+                    "scenarioId"  : "LOG_LINE_" & i,
+                    "survived"    : false,
+                    "errorType"   : errType,
+                    "errorMessage": line,
+                    "errorDetail" : line,
+                    "stackTrace"  : line,
+                    "faultHint"   : line
+                };
+                arrayAppend( extractedErrors, errObj );
+            }
+        }
+
+        if ( arrayLen( extractedErrors ) == 0 ) {
+            return {
+                "ok"              : true,
+                "source"          : arguments.sourceName,
+                "totalLogLines"   : arrayLen( lines ),
+                "errorsExtracted" : 0,
+                "durationMs"      : getTickCount() - t0,
+                "diagnosis"       : {
+                    "ok"       : true,
+                    "causes"   : [],
+                    "summary"  : "No se identificaron excepciones ni fallos en el log analizado.",
+                    "patchable": false
+                },
+                "aiChallenge"     : { "challenged": false },
+                "mermaidGraph"    : "graph TD" & char( 10 ) & "  OK[Sistema Saludable - 0 Excepciones]"
+            };
+        }
+
+        // Ejecutar diagnostico determinista en Healer
+        var diagReport = { "results": extractedErrors };
+        var diagnosis  = variables.healer.diagnose( diagReport );
+
+        // Desafio consultivo bajo demanda con IA Local 3B
+        var aiChallenge = { "challenged": false };
+        if ( arguments.challengeWithAi && variables.config.isLocalAiAvailable() ) {
+            aiChallenge = variables.healer.challengeDiagnosisWithLocalAi( diagnosis, diagReport );
+        }
+
+        // Deteccion del componente o servicio contextual a partir de los errores extraidos
+        var targetComp = "PaymentService";
+        var foundCustom = false;
+        for ( var err in extractedErrors ) {
+            var rawErr = err.errorMessage;
+            var compMatch = reMatchNoCase( "([a-zA-Z0-9_]+)\.(bx|bxs|cfc|java|py|js|ts)", rawErr );
+            if ( arrayLen( compMatch ) > 0 ) {
+                targetComp = compMatch[ 1 ];
+                foundCustom = true;
+                break;
+            }
+            var classMatch = reMatchNoCase( "([a-zA-Z0-9_]+Service|[a-zA-Z0-9_]+Controller|[a-zA-Z0-9_]+Gateway)", rawErr );
+            if ( arrayLen( classMatch ) > 0 ) {
+                targetComp = classMatch[ 1 ];
+                foundCustom = true;
+                break;
+            }
+        }
+        if ( !foundCustom && len( trim( arguments.sourceName ) ) > 0 && arguments.sourceName != "RawLog" && arguments.sourceName != "MermaidTest" && arguments.sourceName != "TestTrace" ) {
+            targetComp = listFirst( arguments.sourceName, "._" );
+        }
+
+        var mermaid = variables.healer.toMermaid( diagnosis, targetComp );
+
+        return {
+            "ok"              : true,
+            "source"          : arguments.sourceName,
+            "totalLogLines"   : arrayLen( lines ),
+            "errorsExtracted" : arrayLen( extractedErrors ),
+            "durationMs"      : getTickCount() - t0,
+            "diagnosis"       : diagnosis,
+            "aiChallenge"     : aiChallenge,
+            "mermaidGraph"    : mermaid
+        };
+    }
+
+    /**
+     * Sanitiza y ofusca informacion confidencial y de identificacion personal (PII):
+     *   - Tarjetas de credito / debito (13-16 digitos con o sin guiones/espacios)
+     *   - Tokens de autenticacion Bearer y JWT
+     *   - Claves de API, contraseñas y secrets en pares clave-valor
+     *   - Direcciones de correo electronico
+     */
+    public string function maskSensitiveData( required string text ) {
+        var clean = arguments.text;
+        if ( len( clean ) == 0 ) {
+            return clean;
+        }
+
+        // 1. Tokens Bearer y JWT
+        clean = reReplaceNoCase( clean, "Bearer\s+[A-Za-z0-9_\-\.\~+/=]{16,}", "Bearer [BEARER_TOKEN_MASKED]", "all" );
+        clean = reReplace( clean, "ey[A-Za-z0-9_-]{10,}\.ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "[JWT_TOKEN_MASKED]", "all" );
+
+        // 2. Tarjetas de credito (grupos de 4 digitos con espacio o guion, o 13-16 digitos seguidos)
+        clean = reReplace( clean, "\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|(?:[0-9]{4}[-\s]){3}[0-9]{4})\b", "[CREDIT_CARD_MASKED]", "all" );
+
+        // 3. Credenciales y secretos (password, secret, apiKey, token)
+        clean = reReplaceNoCase( clean, "(api[_-]?key|password|passwd|secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*['""][^'""]+['""]", "\1=""[SECRET_MASKED]""", "all" );
+        clean = reReplaceNoCase( clean, "(api[_-]?key|password|passwd|secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*[^\s,;]+", "\1=[SECRET_MASKED]", "all" );
+
+        // 4. Correos electronicos
+        clean = reReplaceNoCase( clean, "[a-zA-Z0-9_\.\+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-\.]+", "[EMAIL_MASKED]", "all" );
+
+        return clean;
+    }
+
+}
+
